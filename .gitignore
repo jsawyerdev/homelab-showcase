@@ -1,0 +1,5 @@
+# Never ship unredacted captures or credentials
+screenshots/raw/
+*.raw.png
+*credentials*
+*secret*
