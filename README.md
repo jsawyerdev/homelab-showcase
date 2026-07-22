@@ -4,6 +4,8 @@
 |---|---|
 | Repository | https://github.com/jsawyerdev/homelab-showcase |
 | Software inventory | [INVENTORY.md](INVENTORY.md) |
+| Version audit and recurring SOP | [VERSION-AUDIT.md](VERSION-AUDIT.md) |
+| Upgrade execution plan | [UPGRADE-PLAN.md](UPGRADE-PLAN.md) |
 
 A single-host homelab consolidated from two ad-hoc Docker VMs onto a 3-node
 **Talos Linux** Kubernetes cluster on **Proxmox**, driven end-to-end by GitOps.
@@ -35,6 +37,8 @@ Argo CD sequence rebuilds the cluster from scratch.
 - [Screenshots](#screenshots)
 - [Design tradeoffs and open items](#design-tradeoffs-and-open-items)
 - [Software inventory](#software-inventory)
+- [Version audit and recurring SOP](#version-audit-and-recurring-sop)
+- [Upgrade execution plan](#upgrade-execution-plan)
 
 ---
 
@@ -394,3 +398,13 @@ and the fix that was verified afterwards.
 ## Software inventory
 
 Full list with pinned versions and upstream links: **[INVENTORY.md](INVENTORY.md)**
+
+## Version audit and recurring SOP
+
+The dated update assessment, read-only recurring procedure, and agent handoff
+instructions are in **[VERSION-AUDIT.md](VERSION-AUDIT.md)**.
+
+## Upgrade execution plan
+
+The dependency-ordered maintenance waves, go/no-go gates, rollback boundaries,
+and branch-to-rollout procedure are in **[UPGRADE-PLAN.md](UPGRADE-PLAN.md)**.
