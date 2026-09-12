@@ -266,7 +266,7 @@ credential handling, DNS reconciliation, service validation — is one `tofu app
 |---|---|---|
 | GitLab CE + Runner | `gitlab-ce:19.1.2` · `gitlab-runner:v19.1.1` | Source control, CI, GitOps origin; Kubernetes-executor runner with MinIO cache; separate DR replication path |
 | UniFi Network | `linuxserver/unifi-network-application` + `mongo:7.0` | Wi-Fi controller; rebuilt from a `.unf` backup so both APs re-adopted without reset |
-| Homepage | `gethomepage/homepage:v1.13.2` | Service portal |
+| Homepage | `gethomepage/homepage:v2.2.0` | Service portal |
 | Backrest | `backrest:v1.14.1` (restic) | Backup UI to a NAS SFTP repository |
 | Grafana / InfluxDB / Telegraf | `grafana:13.1.0` · `influxdb:2.9.1` · `telegraf:1.39.1` | Latency + host power/thermal telemetry |
 | MinIO | `pgsty/silo:RELEASE.2026-09-03T13-18-01Z` | Runner cache + Longhorn backup target. Migrated off `minio/minio` after Docker Hub deleted the repo (Apr 2026 archival); Silo is a maintained fork, same protocol/on-disk format. |
