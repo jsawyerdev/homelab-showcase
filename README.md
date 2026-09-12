@@ -269,7 +269,7 @@ credential handling, DNS reconciliation, service validation — is one `tofu app
 | Homepage | `gethomepage/homepage:v1.13.2` | Service portal |
 | Backrest | `backrest:v1.14.1` (restic) | Backup UI to a NAS SFTP repository |
 | Grafana / InfluxDB / Telegraf | `grafana:13.1.0` · `influxdb:2.9.1` · `telegraf:1.39.1` | Latency + host power/thermal telemetry |
-| MinIO | `minio:RELEASE.2025-09-07` | Runner cache + Longhorn backup target |
+| MinIO | `pgsty/silo:RELEASE.2026-09-03T13-18-01Z` | Runner cache + Longhorn backup target. Migrated off `minio/minio` after Docker Hub deleted the repo (Apr 2026 archival); Silo is a maintained fork, same protocol/on-disk format. |
 | Squid | built | Forward proxy for LAN devices |
 | Semaphore | `semaphore:v2.18.27` + `postgres:16` | Ansible automation UI |
 
