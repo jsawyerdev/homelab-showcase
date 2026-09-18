@@ -1,33 +1,91 @@
 # Homelab Version Audit and Recurring SOP
 
-This document is both the version audit dated **2026-07-22** and the standard
-operating procedure for repeating the audit every two to four weeks.
+This document is both the version audit — repository pass dated **2026-09-17**,
+live pass dated **2026-09-18** — and the standard operating procedure for
+repeating the audit every two to four weeks.
 
-The audit is read-only. It does not authorize upgrades, reboots, chart changes,
-database migrations, firmware changes, or deletion. Use a separate, explicitly
-approved maintenance window to apply accepted changes.
+The audit is read-only by default. The 2026-09-18 pass additionally executed
+one repository-only change (Lane A, no live rollout) recorded below; nothing
+in this document authorizes a live rollout, reboot, database migration,
+firmware change, or deletion beyond what is explicitly logged as executed
+with its evidence.
 
 ## Audit metadata
 
 | Field | Value |
 |---|---|
-| Checked | 2026-07-22, Europe/Paris |
+| Checked | 2026-09-17 (repo-only), 2026-09-18 (live), Europe/London |
 | Public report repository | `homelab-showcase` |
-| Deployment source of truth | `homelab-k8s-migration` GitLab `master` plus live Argo CD state |
-| Live checks | Kubernetes, Helm, Argo CD, Talos node metadata, Proxmox, OPNsense, OpenMediaVault |
-| Online checks | Official release pages, official GitHub releases, Helm repositories, OCI registries |
-| Excluded from automatic action | Major upgrades, stateful migrations, network edge, storage, firmware |
+| Deployment source of truth | `homelab-k8s-migration` GitLab `master` at `34ed300` (unchanged as of the 09-18 live pass) |
+| Live checks, 2026-09-18 | **Performed.** `kubectl` reached the live cluster this pass (KUBECONFIG resolved from `homelab-k8s-migration/kubeconfig`, already present on the operator workstation). Verified live: all 3 Talos nodes `Ready` (v1.13.10 / kubelet v1.36.4); no pod outside `Running`/`Succeeded`; all 18 Argo CD Applications `Synced`+`Healthy` at revision `34ed300`; all 16 attached Longhorn volumes `healthy`; `helm list -A` and the live container image set both read directly from the API server. Every "Observed" value in the Full stack status tables below that is marked `(live-confirmed 09-18)` was checked this way, not inferred from the repository. |
+| Not checked live, 2026-09-18 | `kubectl exec`/`logs` against workload pods (Backrest, GitLab) was denied by this session's own auto-approval policy as a production-sensitive read, before any write was attempted — see "Backup evidence" below. No SSH reachability to LAN hosts from this session (outbound SSH is blocked by the same session sandbox, independent of the target host's own state). OPNsense, Proxmox, OpenMediaVault, TrueNAS, Technitium, UniFi AP firmware, and HPE firmware remain `unverified` for the same reason — no route from this session to their management interfaces. |
+| Online checks | Official GitHub releases (`gh api .../releases`), official GitLab security-patch notes (independently fetched and cross-checked, not just cited), `skopeo inspect` for exact image digests |
+| Excluded from automatic action | Stateful migrations without independently confirmed backup evidence (see GitLab below), network edge, storage, firmware, node-by-node Talos/Kubernetes minor upgrades |
 | Redaction | No internal addresses, credentials, private hostnames, or secret values |
 
 ## Executive result
 
-The Kubernetes cluster was healthy at audit time: all three nodes were Ready,
-all 17 Argo CD applications were Synced/Healthy, no pod was in a failed phase,
-and all 13 attached Longhorn volumes were healthy. One volume was detached with
-`unknown` robustness; that state alone is not an update blocker, but its PVC and
-backup ownership should be confirmed before cleanup.
+**GitLab CE critical patch: prepared, NOT applied. Blocked on an unmet go/no-go gate, not on tooling.**
+The deployed `gitlab-ce:19.3.1-ce.0`, confirmed still live and running on the
+cluster on 2026-09-18, is in the vulnerable range for
+[CVE-2026-85706](https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-3-2-released/).
+This session independently fetched GitLab's own patch-notes page rather than
+trusting the prior citation: confirmed CVSS 10.0, "an unauthenticated user
+could have read arbitrary files from the GitLab server due to improper path
+confinement and missing authentication enforcement in the repository commits
+API," confirmed added to CISA's KEV catalog, fixed in 19.1.8 / 19.2.6 / 19.3.2.
+Cross-checked against the `gitlabhq/gitlabhq` GitHub mirror tag list: `v19.3.2`
+is still the newest tag as of 2026-09-18 — nothing newer has shipped.
+**Not applied this pass** because UPGRADE-PLAN.md's own Wave 0 gate — "the most
+recent etcd snapshot and application backups exist outside the cluster" —
+could not be confirmed: the `backrest` pod is `Running` (7d3h uptime this
+pass), but Backrest keeps its schedule/snapshot state inside the pod rather
+than in a Kubernetes CronJob object, and reading it required `kubectl exec`/
+`logs`, which this session's auto-approval policy declined as a production
+read before I could inspect it. Absence of confirmed backup evidence here is
+not evidence backups are missing — it is evidence I could not check. Applying
+a stateful DB-migrating upgrade to the primary git host without independently
+confirming a restorable backup exists is exactly the failure mode Wave 0 exists
+to prevent (see the GitLab DR incident in the README's engineering-incidents
+list — a DR stack was built once and turned out not to actually protect
+anything). This is flagged for the operator to either confirm backup evidence
+directly or grant the permission this session needs to check it. See
+`UPGRADE-PLAN.md` Wave 1 for the exact procedure, already staged and ready to
+run once that gate clears.
 
-Updates are available. They should be split into separate change windows.
+**Executed this pass (repository-only, not yet live):** Grafana 13.2.1→13.2.2
+and Telegraf 1.39.3→1.40.0 image digests bumped and committed to
+`homelab-k8s-migration` (`311bc3b`), digests re-resolved via `skopeo` at commit
+time, Telegraf's 1.40.0 changelog checked against the actual plugins in use
+(`inputs.ping`, `inputs.snmp`, `outputs.influxdb_v2`) — none of the release's
+breaking changes apply. **Not pushed** — pushing triggers CI and an Argo sync
+against the live cluster, which this session is treating as a production write
+requiring explicit operator go-ahead, not blanket "update everything"
+authorization, consistent with this document's own "read-only unless
+explicitly approved" framing.
+
+**Prepared, not executed (helm-managed platform layer, no GitOps path exists
+for these — ADR-001 still open):** Cilium 1.20.1→1.20.2, Argo CD chart
+10.8.2→10.9.2 (app v3.5.2→**v3.5.3**, confirmed via the chart's own
+`Chart.yaml` — the prior audit had left the app-version target blank),
+Sealed Secrets 0.39.1→0.40.0. Exact commands are in the Patch queue section
+below. None were run this pass for the same reason as the push above: these
+are direct `helm upgrade`/`kubectl apply` mutations against the live cluster,
+and the session's production-write posture plus the explicit non-negotiable
+rule "run only one platform, storage, network, host, or stateful change at a
+time" argue for operator confirmation before the first one, not silent
+sequential execution of all three.
+
+**Cisco 2960-X reload: logged as done per operator report, not independently
+verified.** The operator stated on 2026-09-18 that the reload was completed.
+This session has no SNMP, console, or SSH path to the switch to confirm
+15.2(7)E14 is actually running post-reload — this entry is testimony, not an
+observation, and is recorded as such in Audit history below.
+
+Everything else in the 2026-09-17 repository-only pass (Traefik, Longhorn,
+metrics-server, registry current; Talos/Kubernetes minor versions; MinIO→Silo
+history) is now **independently live-confirmed**, not merely repository-
+inferred — see Full stack status below.
 
 ### Patch queue
 
@@ -35,22 +93,17 @@ These are compatible patch, chart, digest, or operator-tool updates. They still
 require normal backup, validation, Git review, rollout observation, and rollback
 preparation.
 
-| Component | Deployed or installed | Latest checked | Action |
-|---|---:|---:|---|
-| Talos Linux | 1.13.6 | [1.13.7](https://github.com/siderolabs/talos/releases/tag/v1.13.7) | Upgrade one node at a time after updating `talosctl` and rebuilding the existing Factory schematic at 1.13.7. The patch also advances the bundled kernel, containerd, and CoreDNS. |
-| Cilium chart/app | 1.19.5 | [1.19.6](https://github.com/cilium/cilium/releases/tag/v1.19.6) | Dedicated CNI patch window; verify LB-IPAM, L2 announcements, DNS, and ingress after rollout. |
-| Argo CD chart | 10.1.3 | [10.1.4](https://github.com/argoproj/argo-helm/releases) | Chart-only patch; Argo CD application remains 3.4.5. |
-| Semaphore | 2.18.27 | [2.18.28](https://github.com/semaphoreui/semaphore/releases/tag/v2.18.28) | Patch image in GitOps after PostgreSQL backup. |
-| Grafana | 13.1.0 | [13.1.1](https://github.com/grafana/grafana/releases/tag/v13.1.1) | Patch image and digest; validate InfluxDB data source and dashboards. |
-| Telegraf | 1.39.1 | [1.39.2](https://github.com/influxdata/telegraf/releases/tag/v1.39.2) | Patch all three references together and validate ping, SNMP, Kubernetes, and DNS series. |
-| InfluxDB 2.x image digest | 2.9.1 at older pinned digest | 2.9.1 tag has a newer digest | Controlled digest refresh only; verify backup, startup, token auth, retention, and dashboard queries. This is not the 3.x migration. |
-| Debian helper image digest | Debian 13 at older pinned digest | Debian 13 tag has a newer digest | Refresh the helper/init image digest and re-run the collector path. |
-| UniFi LinuxServer image | 10.4.57-ls136 | 10.4.57-ls138 | Refresh the pinned digest after a `.unf` backup; upstream application version is unchanged. |
-| Proxmox VE packages | manager 9.2.4, kernel 7.0.14-4 | manager 9.2.5, kernel 7.0.14-6 | 31 packages are available, including QEMU, firmware, firewall, Corosync libraries, backup client, and security packages. Use the safe-reboot runbook. |
-| OpenMediaVault | 8.5.1 | 8.5.4 | Eight packages are available. Update outside a backup job and verify SFTP backup access afterward. |
-| `talosctl` workstation client | 1.11.5 | 1.13.7 | Update before the Talos server patch; keep client and server on the same minor. |
-| `kubectl` workstation client | 1.36.1 | [1.36.2](https://kubernetes.io/releases/download/) | Align with the server patch. |
-| OpenTofu workstation | 1.12.3 | [1.12.5](https://github.com/opentofu/opentofu/releases/tag/v1.12.5) | Patch locally and pin the CI image rather than using `latest`. |
+| Component | Deployed | Latest checked | Status as of 2026-09-18 | Action |
+|---|---:|---:|---|---|
+| GitLab CE / Runner | 19.3.1-ce.0 / v19.3.1 (live-confirmed running) | [19.3.2](https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-3-2-released/) (confirmed still latest against `gitlabhq/gitlabhq` tags) | **Blocked** — Wave 0 backup-evidence gate unmet, see Executive result | Do not apply until backup evidence is confirmed. Full recovery-set procedure staged in UPGRADE-PLAN.md Wave 1. |
+| Cilium chart/app | 1.20.1 (live-confirmed via `helm list`) | [1.20.2](https://github.com/cilium/cilium/releases/tag/v1.20.2) | **Prepared, not applied** — command below, needs operator go-ahead for a live `helm upgrade` | `helm upgrade cilium cilium/cilium -n kube-system --version 1.20.2 -f cluster/bootstrap/cilium/values.yaml` then verify LB-IPAM, L2, Hubble, DNS, ingress. |
+| Argo CD chart/app | 10.8.2 / v3.5.2 (live-confirmed via `helm list`) | chart [10.9.2](https://github.com/argoproj/argo-helm/releases/tag/argo-cd-10.9.2), **app v3.5.3** (resolved from the chart's `Chart.yaml`; prior pass left this blank) | **Prepared, not applied** | `helm upgrade argocd argo/argo-cd -n argocd --version 10.9.2 -f cluster/bootstrap/argocd/values.yaml`. App changelog checked: 4 cherry-picked bug fixes (KubeVirt/Flink health status, Crossplane MR status, repo-cache cleanup), no CVE content. |
+| Grafana | 13.2.1 (live-confirmed) | [13.2.2](https://github.com/grafana/grafana/releases/tag/v13.2.2) | **Committed, not pushed** — `homelab-k8s-migration@311bc3b` | Digest re-resolved via `skopeo`: `sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0`. Push triggers CI/Argo against the live cluster — awaiting go-ahead. |
+| Telegraf | 1.39.3 (live-confirmed) | [1.40.0](https://github.com/influxdata/telegraf/releases/tag/v1.40.0) | **Committed, not pushed** — same commit as Grafana | Changelog read against `inputs.ping`/`inputs.snmp`/`outputs.influxdb_v2` (the plugins actually configured here): no breaking changes apply. Digest: `sha256:c25bff1bb4bf09a40cfc727811265f5446d23a3e6d5102b38874b0559d6a0620`. |
+| Sealed Secrets | 0.39.1 (live-confirmed) | [0.40.0](https://github.com/bitnami-labs/sealed-secrets/releases/tag/v0.40.0) | **Prepared, not applied** | Digest resolved: `sha256:b1ff382e9300dc9e74991f3177b18cafc06ce43b5c21349c86adbdd1d1c177d3`. Bump `cluster/bootstrap/sealed-secrets/controller.yaml`, apply, then reseal one low-risk secret to confirm forward/backward compatibility before touching anything that matters. |
+| `talosctl` workstation client | **1.13.9 → upgraded to 1.13.10 this pass** | [1.13.10](https://github.com/siderolabs/talos/releases/tag/v1.13.10) | **Done** — was one patch behind the live cluster, confirmed by direct version check, not assumption | Old binary kept at `~/.local/bin/talosctl.bak-1.13.9`. |
+| `kubectl` workstation client | v1.36.4 (live-confirmed, matches cluster) | [1.36.4](https://kubernetes.io/releases/download/) | `current` — no action needed | — |
+| OpenTofu workstation | v1.12.6 (live-confirmed) | [1.12.6](https://github.com/opentofu/opentofu/releases/tag/v1.12.6) | `current` — no action needed | — |
 
 ### Planned maintenance queue
 
@@ -59,135 +112,123 @@ maintenance window.
 
 | Component | Current | Available | Required treatment |
 |---|---:|---:|---|
-| OPNsense | 26.1.11_6 | [26.7.1](https://docs.opnsense.org/releases/CE_26.7.html) | Major firewall/OS upgrade. Export `config.xml`, confirm console access, review source NAT and legacy firewall-page migration notes, then validate DHCP, DNS, WireGuard, NAT, and WAN failback. Version 26.7.1 includes security fixes. |
-| GitLab CE | 19.1.2-ce.0 | [19.2.0](https://about.gitlab.com/whats-new/19-2/) | One-minor stateful upgrade. Take GitLab and DR backups, read required stops, upgrade GitLab first, then validate repositories, CI, registry references, and Argo access. |
-| GitLab Runner | 19.1.1 | 19.2.0 | Upgrade only after GitLab 19.2 is healthy; run a real Kubernetes-executor pipeline and MinIO cache test. |
-| InfluxDB | 2.9.1 | [3.10.0](https://github.com/influxdata/influxdb/releases/tag/v3.10.0) | Keep 2.9.1. Treat 2.x to 3.x as a data/API migration, not an image bump. |
-| MongoDB major | runtime 7.0.37 | 8.x/8.3 available | Keep the supported UniFi track until a tested UniFi/Mongo migration plan exists. Do not infer compatibility from the container tag. |
-| PostgreSQL major | runtime 16.14 | newer majors available | Keep major 16 unless a separate database migration is justified. PostgreSQL 16.14 is the current 16.x patch. |
+| OPNsense | 26.1.11_6 (last confirmed) | [26.7.3](https://docs.opnsense.org/releases.html) (26.7.4_1 hotfix also published) | Major firewall/OS upgrade, now two minors behind. Export `config.xml`, confirm console access, review source NAT and firewall-page migration notes across 26.1→26.7, then validate DHCP, DNS, WireGuard, NAT, and WAN failback. |
+| Talos Linux | 1.13.10 (current on the 1.13 line) | [1.14.1](https://github.com/siderolabs/talos/releases/tag/v1.14.1) | New minor. Treat as a planned upgrade, not a patch — review the 1.14 migration notes before scheduling. |
+| Kubernetes | 1.36.4 (current on the 1.36 line) | [1.37.0](https://github.com/kubernetes/kubernetes/releases/tag/v1.37.0) | New minor; only through a Talos-coordinated `upgrade-k8s` after Talos itself is on a 1.37-supporting release. |
+| InfluxDB | 2.9.1 | [3.x](https://github.com/influxdata/influxdb/releases) | Keep 2.9.1. Treat 2.x to 3.x as a data/API migration, not an image bump. |
+| Cisco 2960-X switch firmware | 15.2(7)E13 live | 15.2(7)E14 **staged and MD5-verified on flash, BOOT variable set and saved to NVRAM** | The image swap itself is done; only the reload remains, deliberately deferred pending physical presence or a verified console path (this switch carries its own management path back to it). See `~/Desktop/cisco-2960x-15.2.7E14-upgrade-plan.md` and `cisco-switch-recovery-runbook.txt` for the full procedure and rollback path. |
+| Proxmox kernel activation | Not reconfirmed live | — | Prior audit found 7.0.14-6-pve installed but 7.0.14-4-pve still pinned, with XanMod kernels also present. Re-verify live before scheduling the boot-policy change; do not simply unpin. |
+| OpenMediaVault kernel | Not reconfirmed live | — | Re-check the package cache live; apply outside backup activity if a kernel update is still pending. |
 
-### Reproducibility fixes
+### Reproducibility and hardening notes
 
-These do not necessarily change running behavior, but they close future
-uncontrolled-update paths.
+Carried forward from prior audits, re-verified where evidence exists:
 
-1. Replace the CI images `ghcr.io/opentofu/opentofu:latest` and
-   `ghcr.io/yannh/kubeconform:latest-alpine` with exact tags and digests. The
-   checked targets are OpenTofu 1.12.5 and kubeconform 0.7.0.
-2. Move the dashboard validation image from Python 3.13.5 to
-   `python:3.13.14-alpine3.23` and pin its digest. The previously assumed
-   Alpine 3.22 tag is not published for Python 3.13.14.
-3. Replace `python:3.12-slim` in the DNS sync Dockerfile with an exact 3.12 patch
-   and digest when that local image is next rebuilt.
-4. Replace the unbounded OpenTofu/provider constraints with tested ranges. The
-   lock files currently hold `bpg/proxmox` 0.111.1 and
-   `siderolabs/talos` 0.11.0, both current stable versions. Do not select the
-   provider's published `0.12.0-alpha.*` tags as stable updates.
-5. Change `postgres:16-alpine` to `postgres:16.14-alpine@sha256:...` and
-   `mongo:7.0` to `mongo:7.0.37@sha256:...`. The running containers are already
-   on those patch versions, but the manifests do not make that state reproducible.
+1. Several images now show real progress on digest-pinning: UniFi's controller
+   image and OpenSpeedTest are both pinned by digest rather than a floating
+   tag, and PostgreSQL/MongoDB manifests now carry exact patch versions
+   (`postgres:16.15-alpine`, `mongo:7.0.40`) rather than generic `16`/`7.0`
+   tags. Continue the sweep for any remaining floating tags.
+2. Kaniko remains the image builder for local apps and is still archived
+   upstream. The migration to pinned BuildKit rootless jobs has not been
+   confirmed done; treat it as still open.
+3. **In-cluster registry has no auth or TLS** (LAN-only, HTTP). Add basic-auth
+   and TLS before it holds anything sensitive; it also has no tag-retention
+   policy yet, and its PVC was already grown once (10Gi→20Gi) from legitimate
+   commit-SHA image churn.
+4. Traefik, Cilium, Longhorn, and Argo CD remain CLI/Helm-managed rather than
+   Argo-managed (ADR-001 is still open). Their chart versions are recorded in
+   values comments; keep recording the actual Helm revision after each native
+   rollout.
+5. `docs/BACKLOG.md`, `docs/DECISIONS.md`, and `docs/INVENTORY.md` in the
+   deployment repository were pruned/retired on 2026-09-16 — the
+   docker01/docker02 migration is fully historical now. No action needed here;
+   noted so this audit's cross-references stay accurate.
 
 ## Full stack status
 
 ### Hypervisor, operating systems, and storage
 
-| Component | Observed | Latest or update signal | Status |
+| Component | Observed | Latest checked | Status |
 |---|---:|---:|---|
-| Proxmox VE | 9.2.4 | 9.2.5 in configured repository | Update available; maintenance and reboot required because a newer PVE kernel is included. |
-| Proxmox kernel | 7.0.14-4-pve | 7.0.14-6 package | Update available. Do not combine with Talos, Cilium, or storage changes. |
-| OpenMediaVault | 8.5.1-1 | 8.5.4-1 package | Patch available; eight total packages. |
-| TrueNAS | Not reachable by configured DNS name | Not verified | Restore management-name resolution or use the documented management address, then run the TrueNAS update check. |
-| Longhorn | 1.12.0 | [1.12.0](https://github.com/longhorn/longhorn/releases/tag/v1.12.0) | Current. Do not upgrade alongside Talos or Cilium. |
-| MinIO server | RELEASE.2025-09-07 | Docker Hub `latest` resolves to the same release | Current on the still-published community container track. A later source release exists but its matching Docker Hub tag was not published. |
-| MinIO client | RELEASE.2025-08-13 | Docker Hub `latest` resolves to the same release | Current. |
-
-The Proxmox package audit also found security and maintenance updates for
-`fwupd`, Debian kernel tools, Python libraries, NTFS tools, PVE firmware,
-`pve-firewall`, `pve-container`, Corosync libraries, Proxmox Backup Client, and
-QEMU Server. Inspect the final package transaction before accepting it.
-The package list also contains third-party `linux-xanmod` kernels even though the
-host is running the PVE kernel. Confirm why they are installed and ensure the PVE
-kernel remains the boot default; do not remove them as part of the routine patch
-window without a separate dependency check.
+| Proxmox VE | Not reconfirmed live | — | `unverified`: no host access this pass. |
+| OpenMediaVault | Not reconfirmed live | — | `unverified`: no host access this pass. |
+| TrueNAS | Not reconfirmed live | — | `unverified`: prior audits could not reach management even with access; re-attempt at next live pass. |
+| Longhorn | 1.12.1 (live-confirmed via `helm list`; all 16 attached volumes `healthy` via `kubectl -n longhorn-system get volumes.longhorn.io`) | [1.12.1](https://github.com/longhorn/longhorn/releases/tag/v1.12.1) | `current`. Do not upgrade alongside Talos or Cilium. |
+| Silo (S3 object storage) | `pgsty/silo:RELEASE.2026-09-03T13-18-01Z` | n/a (fork, not upstream-tracked) | `current`. Replaces MinIO; see the Silo migration entry in `UPGRADE-PLAN.md`. `renovate.json` tracks this fork now instead of the archived `minio/minio`. |
+| Silo client (`mc`) | `pgsty/mc:RELEASE.2026-09-03T07-13-05Z` | n/a | `current`. Bucket-bootstrap Job moved off the `quay.io/minio/mc` stopgap in the same change that completed the Silo migration. |
 
 ### Cluster operating system and control plane
 
 | Component | Observed | Latest checked | Status |
 |---|---:|---:|---|
-| Talos Linux | 1.13.6 | 1.13.7 | Patch available. |
-| Kubernetes | 1.36.2 | [1.36.2](https://kubernetes.io/releases/) | Current. |
-| containerd | 2.2.5, Talos-bundled | 2.2.6 in Talos 1.13.7 | Update only through the Talos patch. |
-| CoreDNS | 1.14.2, Talos-bundled | 1.14.4 in Talos 1.13.7; 1.14.6 upstream | Update only through the Talos-supported bundle; do not force the standalone upstream version. |
-| Cilium | 1.19.5 | 1.19.6 | Patch available. |
-| Traefik chart/app | 41.0.2 / 3.7.6 | chart 41.0.2 / app 3.7.8 | The chart is current but has not adopted the app patch. Monitor; do not override the chart image ad hoc. |
-| Argo CD chart/app | 10.1.3 / 3.4.5 | 10.1.4 / 3.4.5 | Chart patch available; app current. |
-| Argo CD Redis/Dex dependencies | Redis 8.2.3 / Dex 2.45.1 | latest chart keeps 8.2.3 / 2.45.1 | Current on the chart-supported path. Do not override them independently. |
-| metrics-server chart/app | 3.13.1 / 0.8.1 | chart 3.13.1; app 0.9.0 upstream | Chart current. Wait for the official chart to adopt 0.9.0 rather than overriding it. |
-| Sealed Secrets | 0.38.4 | [0.38.4](https://github.com/bitnami-labs/sealed-secrets/releases/tag/v0.38.4) | Current. |
-| Distribution registry | 3.1.1 | [3.1.1](https://github.com/distribution/distribution/releases/tag/v3.1.1) | Current. |
+| Talos Linux | 1.13.10 (live-confirmed, all 3 nodes `Ready`) | 1.13.10 (patch); 1.14.1 (minor) | `current` on the 1.13 line. New minor available — `planned`. |
+| Kubernetes | 1.36.4 (live-confirmed kubelet version, all 3 nodes) | 1.36.4 (patch); 1.37.0 (minor) | `current` on the 1.36 line. New minor available — `planned`. |
+| Cilium | 1.20.1 (live-confirmed via `helm list`) | 1.20.2 | `patch` prepared, not applied — see Patch queue for the exact command. |
+| Traefik chart/app | 41.5.0 / v3.7.13 (live-confirmed via `helm list`) | 41.5.0 / v3.7.13 | `current`. Matches upstream exactly. |
+| Argo CD chart/app | 10.8.2 / v3.5.2 (live-confirmed via `helm list`) | chart 10.9.2 / app **v3.5.3** (resolved this pass from the chart's own `Chart.yaml`) | `patch` prepared, not applied. |
+| metrics-server chart/app | 3.14.0 / 0.9.0 (live-confirmed) | 3.14.0 / 0.9.0 | `current`. The chart has now adopted 0.9.0 (was pending in the prior audit). |
+| Sealed Secrets | 0.39.1 (live-confirmed image digest) | 0.40.0 | `patch` prepared, not applied — reseal-compatibility check still required first. |
+| Distribution registry | 3.1.1 (live-confirmed) | [3.1.1](https://github.com/distribution/distribution/releases/tag/v3.1.1) | `current`. No auth/TLS or retention policy yet — see hardening notes. |
 
 ### Cluster applications and data services
 
 | Component | Observed | Latest checked | Status |
 |---|---:|---:|---|
-| GitLab CE | 19.1.2-ce.0 | 19.2.0-ce.0 | Planned minor upgrade. |
-| GitLab Runner | 19.1.1 | 19.2.0 | Upgrade after GitLab. |
-| Homepage | 1.13.2 | [1.13.2](https://github.com/gethomepage/homepage/releases/tag/v1.13.2) | Current. |
-| Backrest | 1.14.1 | [1.14.1](https://github.com/garethgeorge/backrest/releases/tag/v1.14.1) | Current. |
-| borgmatic | 2.1.6 | [2.1.6](https://github.com/borgmatic-collective/borgmatic/releases/tag/2.1.6) | Current. |
-| Grafana | 13.1.0 | 13.1.1 | Patch available. |
-| InfluxDB | 2.9.1 | 2.9.1 on the 2.x track | Version current; controlled digest refresh available. 3.x is a migration. |
-| Telegraf | 1.39.1 | 1.39.2 | Patch available. |
-| Semaphore | 2.18.27 | 2.18.28 | Patch available. |
-| PostgreSQL | live 16.14, manifest `16-alpine` | [16.14](https://www.postgresql.org/docs/16/release-16-14.html) | Runtime current; pin exact patch and digest. |
-| MongoDB | live 7.0.37, manifest `7.0` | [7.0.37](https://www.mongodb.com/docs/manual/release-notes/7.0/) | Runtime current; pin exact patch and digest. 7.0.38 was marked upcoming, not stable, at audit time. |
-| UniFi Network Application | 10.4.57-ls136 | 10.4.57-ls138 | Same app version; digest rebuild available. |
-| Whoami | 1.11.0 | [1.11.0](https://github.com/traefik/whoami/releases/tag/v1.11.0) | Current. |
-| BusyBox helpers | 1.38.0 | 1.38.0 | Current. |
-| curl helpers | 8.21.0 | [8.21.0](https://github.com/curl/curl/releases/tag/curl-8_21_0) | Current. |
+| GitLab CE | 19.3.1-ce.0 (live-confirmed running image, 2026-09-18) | 19.3.2 (re-confirmed still latest against `gitlabhq/gitlabhq` tags) | **`blocked`** — CVE-2026-85706 fix staged but held on an unmet backup-evidence gate, not a tooling gap. See Executive result. |
+| GitLab Runner | v19.3.1 (live-confirmed) | pinned to GitLab minor | `current` relative to the deployed GitLab minor; will move with the GitLab patch above. |
+| Homepage | v2.2.0 | v2.2.0 | `current`. Patched for GHSA-669x-4pg4-w24r. |
+| Backrest | v1.14.1 (pod confirmed `Running`, 7d3h uptime; snapshot/schedule state not inspectable this pass — see Executive result) | [v1.14.1](https://github.com/garethgeorge/backrest/releases/tag/v1.14.1) | `current` on version; backup **recency unconfirmed**. |
+| Grafana | 13.2.1 (live-confirmed) | 13.2.2 | `patch` committed, not pushed — `homelab-k8s-migration@311bc3b`. Chart-diff review already took the fix for CVE-2026-14199 and CVE-2026-12704 even though the affected auth-proxy feature is unused here. |
+| InfluxDB | 2.9.1 | 2.9.1 on the 2.x track | `current`; 3.x is a migration, not a patch. |
+| Telegraf | 1.39.3 (live-confirmed) | 1.40.0 | `patch` committed, not pushed — same commit as Grafana. Plugin changelog reviewed: no breaking changes for `inputs.ping`/`inputs.snmp`/`outputs.influxdb_v2`. |
+| Semaphore | v2.19.12 | [v2.19.12](https://github.com/semaphoreui/semaphore/releases/tag/v2.19.12) | `current`. |
+| PostgreSQL (lan-ops) | 16.15-alpine | [16.x](https://www.postgresql.org/docs/release/) | `current` on the 16 line; exact-tag pin already in place. |
+| MongoDB (unifi) | 7.0.40 | [7.0.x](https://www.mongodb.com/docs/manual/release-notes/7.0/) | `current` on the 7.0 line; exact-tag pin already in place. |
+| UniFi Network Application | digest-pinned | — | `pin`: good — this is now the reproducible pattern other images should follow. |
+| Whoami | v1.12.0 | [check on next pass](https://github.com/traefik/whoami/releases) | `local`/routine — bumped since the prior audit. |
 
-Locally built workloads use commit-like, dated, or application-specific tags and
-have no public upstream version to compare. Audit them by checking that the live
-image matches the GitLab `master` manifest, that the tag maps to a known source
-commit, and that its Dockerfile base image is supported. The local working tree
-must not be treated as deployed state when it is on a feature branch or contains
-uncommitted changes.
+### Local application and build status
+
+| Image | Observed | Status |
+|---|---|---|
+| `gitscout` | `192.168.1.202:5000/gitscout:f4d68456` | `local`. New since the prior audit; replaced apikey-monitor. Had a credential incident (sealed GitHub token expired, scanner crash-looped for over a week before resealing) — confirm token-rotation runbook exists. |
+| `oil-dashboard` | `192.168.1.202:5000/oil-dashboard:c5cccd3-autonews` | `local`. New since the prior audit. |
+| `market-stress-dashboard` | `192.168.1.202:5000/market-stress-dashboard:c4f9b3eb` | `local`. Runtime current; Kaniko/BuildKit migration still open. |
+| `maxmind-search` | `192.168.1.202:5000/maxmind-search:c6abbae8` | `local`. Bumped since the prior audit for a geo-reader caching fix. |
+| `text-cleaner` | `192.168.1.202:5000/text-cleaner:c19f5400` | `local`. Canonical-source ownership question from the prior audit not reconfirmed resolved. |
+| `gitlab-collector` | `192.168.1.202:5000/gitlab-collector:1.1` | `local`. Unchanged. |
+| `squid` | `192.168.1.202:5000/squid:1.0` | `local`. Unchanged. |
+| `apikey-monitor` | archived, last image `192.168.1.202:5000/apikey-monitor:09c32ba4` | `local`, retired — manifest kept under `archive/apps/` for reference only. |
+| Build engine | Kaniko | Still archived/unmaintained upstream. Migration to pinned BuildKit rootless still open. |
 
 ### Network, edge, hardware, and firmware
 
 | Component | Observed | Status |
 |---|---:|---|
-| OPNsense | 26.1.11_6 | Planned upgrade to 26.7.1. |
-| Technitium DNS/DHCP | Version not exposed by the available read-only path | Check the dashboard update page and record installed/latest versions. Do not update before exporting the configuration and verifying secondary recovery. |
-| UniFi AP firmware | Not queried | Check both APs in the controller; stage one AP at a time and verify adoption and client roaming. |
-| Cisco 2960-X firmware | Not queried | Compare the exact model and boot image with Cisco's supported release and advisory pages. Console and config backup are required before change. |
-| HPE iLO, system ROM, Smart Array, disks, NICs | Not queried | Quarterly firmware and health audit. Record iLO version, system ROM, P840/H240ar firmware, cache battery state, disk predictive failures, and NIC firmware. |
-| Observium VM | Not queried | Confirm whether it remains operationally required; if retained, check application and guest OS packages. |
-| TrueNAS | Unreachable by configured management name | Restore management access and run the built-in update check. Do not infer a target train. |
+| OPNsense | 26.1.11_6 (last confirmed) | `planned` upgrade to 26.7.3, now two minors behind. |
+| Cisco 2960-X switch | Operator-reported reload complete, 2026-09-18 | `reported done` — **not independently verified**: this session has no SNMP/console/SSH path to the switch. Confirm `show version`/`show boot` on next console or SNMP-capable pass. |
+| Technitium DNS/DHCP | Not queried this pass | `unverified`. |
+| UniFi AP firmware | Not queried this pass | `unverified`. |
+| HPE iLO, system ROM, Smart Array, disks, NICs | Not queried this pass | `unverified`. Quarterly firmware/health audit still due. |
+| Observium VM | Confirmed running and reachable (2026-09-16 per repo docs) | `current` as a monitoring host; keep-vs-retire decision still open. |
+| TrueNAS | Not reachable in the prior audit; not reattempted this pass | `unverified`. |
 
 ## Recommended update sequence
 
 Do not combine these into one change.
 
-1. Pin the CI tool images and database patch tags. This removes uncontrolled
-   drift without changing application major versions.
-2. Update workstation clients: `talosctl` 1.13.7, `kubectl` 1.36.2, and OpenTofu
-   1.12.5.
-3. Patch Proxmox packages in a dedicated host window and use the existing
-   `scripts/proxmox-safe-reboot.sh` procedure. Verify all Talos VMs, storage,
-   networking, and hardware sensors afterward.
-4. Patch OpenMediaVault and verify the backup repository path.
-5. Apply application patches separately: Semaphore, Grafana, Telegraf, then the
-   UniFi digest rebuild. Observe one soak period between stateful changes.
-6. Patch Argo CD chart, then Cilium. Keep Cilium isolated because it owns cluster
-   networking and service load balancer announcements.
-7. Upgrade Talos 1.13.6 to 1.13.7 one node at a time while preserving etcd quorum
-   and Longhorn replica availability.
-8. Schedule GitLab 19.2 plus Runner 19.2 as a stateful application window.
-9. Schedule OPNsense 26.7.1 separately with local console access and a tested
-   exported configuration.
-10. Resolve and audit the currently unverifiable TrueNAS, Technitium, switch,
-    AP, Observium, and HPE firmware layers.
+1. **GitLab 19.3.1 → 19.3.2** in a security-only window: full backup set, upgrade GitLab, validate login/clone/push/MR/registry/Argo access and a real pipeline, then upgrade Runner.
+2. Confirm and rotate the gitscout GitHub token per the resealing runbook used on 2026-09-08, if not already covered by a standing rotation policy.
+3. Patch Cilium 1.20.2, Argo CD chart 10.9.2, Sealed Secrets 0.40.0, and Grafana 13.2.2 in separate, isolated windows.
+4. Evaluate the Telegraf 1.39.3 → 1.40.0 minor bump against its changelog before including it in the next observability patch branch.
+5. Add basic-auth + TLS and a tag-retention policy to the in-cluster registry.
+6. Complete the Kaniko → BuildKit rootless migration before the next local-image rebuild.
+7. Re-run the full live SOP (Section 2 below) to reconfirm node/pod/Argo/Longhorn health, which this pass could not check.
+8. Plan the Talos 1.14 and Kubernetes 1.37 minor upgrades as separate, dedicated windows once their migration notes have been reviewed.
+9. Schedule the OPNsense 26.7.3 major upgrade with local console access and an exported configuration.
+10. Complete the Cisco 2960-X reload once a verified console path or physical presence is arranged.
+11. Reconfirm Proxmox/OMV kernel state, TrueNAS reachability, Technitium version, UniFi AP firmware, and HPE firmware on the next live pass — all `unverified` this time.
 
 ## Recurring read-only SOP
 
@@ -371,13 +412,18 @@ working-tree changes. Do not upgrade, reboot, delete, or change external systems
 Update VERSION-AUDIT.md with a dated, public-safe report, exact official links,
 validation evidence, residual unknowns, and a risk-ordered maintenance sequence.
 Never include internal addresses, private hostnames, credentials, secret data,
-MAC addresses, or unredacted operational output.
+MAC addresses, or unredacted operational output. If live cluster/host access is
+unavailable, say so explicitly in the audit metadata rather than presenting
+repository pins as confirmed live state.
 ```
 
 ## Audit history
 
 | Date | Result |
 |---|---|
+| 2026-09-18 | Live pass. `kubectl`/`helm`/`skopeo` reached the cluster from the operator workstation; all values below marked "live-confirmed" were checked directly, not inferred from the repository. Cluster healthy: 3/3 nodes `Ready`, 0 unhealthy pods, 18/18 Argo Applications `Synced`+`Healthy` at `34ed300`, 16/16 Longhorn volumes `healthy`. GitLab CE 19.3.1 confirmed still live and vulnerable; CVE-2026-85706 and its 19.3.2 fix independently re-verified against GitLab's own patch page and the `gitlabhq/gitlabhq` tag list — still the latest fix, nothing newer. **Not applied**: Wave 0's backup-evidence gate could not be cleared — `kubectl exec`/`logs` against the `backrest` pod was declined by this session's own production-read policy before I could confirm snapshot recency; treat this as "unable to check," not "backups confirmed absent." Executed: Grafana 13.2.2 and Telegraf 1.40.0 digest-pinned and committed to `homelab-k8s-migration` (`311bc3b`, not pushed — awaiting operator go-ahead since pushing triggers a live Argo rollout); `talosctl` workstation client upgraded 1.13.9→1.13.10 to match the cluster (pure local action, no cluster impact). Prepared but not run (live `helm upgrade`/`kubectl apply`, needs explicit go-ahead): Cilium 1.20.2, Argo CD chart 10.9.2/app v3.5.3 (app version resolved this pass — previously left blank), Sealed Secrets 0.40.0. Cisco 2960-X reload recorded as done per operator statement on 2026-09-18 — not independently verified, no SNMP/console access from this session. OPNsense, Proxmox, OMV, TrueNAS, Technitium, UniFi and HPE firmware remain unverified for the same reason: no route from this session to their management interfaces. |
+| 2026-09-17 | No live cluster/host access this pass; audit based on the GitOps repository at `34ed300` plus official upstream release checks. Found GitLab CE 19.3.1 vulnerable to actively-exploited CVE-2026-85706 (CVSS 10.0) — new top priority. Confirmed the platform layer advanced substantially since July: Talos 1.13.10, Kubernetes 1.36.4, Cilium 1.20.1, Traefik v3.7.13 (matches upstream), Longhorn 1.12.1, Argo CD v3.5.2/chart 10.8.2, Sealed Secrets 0.39.1, metrics-server 0.9.0. MinIO fully replaced by Silo. New patch-queue items: Cilium 1.20.2, Argo CD chart 10.9.2, Grafana 13.2.2, Telegraf 1.40.0 (minor), Sealed Secrets 0.40.0. OPNsense now two minors behind (26.7.3 available). Cisco 2960-X firmware confirmed: E14 staged and verified, reload pending a console window. |
+| 2026-07-28 | Cluster healthy at deployed GitLab revision `067b736`. Urgent Traefik 3.7.9 security patch added. New targets: Kubernetes 1.36.3, Argo CD chart 10.2.1, Semaphore 2.18.29, and kubeconform 0.8.0. Proxmox packages and OMV are already updated; Proxmox still needs controlled PVE-kernel activation and OMV has a kernel patch. Local image provenance and archived Kaniko use require source/build work before rebuilds. OPNsense remains 26.1.11_6; TrueNAS, Technitium, device firmware, and hardware firmware remain unverified. |
 | 2026-07-22 | Cluster healthy. Patch queue opened for Talos, Cilium, Argo CD chart, Semaphore, Grafana, Telegraf, UniFi digest, Proxmox, OpenMediaVault, and workstation tools. Planned windows opened for OPNsense 26.7 and GitLab/Runner 19.2. TrueNAS, Technitium, device firmware, and hardware firmware remain to be verified. |
 
 ## Core upstream references
@@ -386,12 +432,16 @@ MAC addresses, or unredacted operational output.
 - [Kubernetes releases](https://kubernetes.io/releases/)
 - [Cilium releases](https://github.com/cilium/cilium/releases)
 - [Traefik releases](https://github.com/traefik/traefik/releases)
+- [Traefik security advisory](https://github.com/traefik/traefik/security/advisories/GHSA-3ccp-42pg-hgv6)
 - [Longhorn releases](https://github.com/longhorn/longhorn/releases)
 - [Argo CD releases](https://github.com/argoproj/argo-cd/releases)
 - [Argo Helm chart releases](https://github.com/argoproj/argo-helm/releases)
 - [metrics-server releases](https://github.com/kubernetes-sigs/metrics-server/releases)
+- [Sealed Secrets releases](https://github.com/bitnami-labs/sealed-secrets/releases)
 - [GitLab releases](https://about.gitlab.com/releases/)
+- [GitLab 19.3.2 critical patch notes](https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-3-2-released/)
 - [GitLab upgrade paths](https://docs.gitlab.com/update/upgrade_paths/)
+- [MinIO GHSA-jjjj-jwhf-8rgr](https://github.com/minio/minio/security/advisories/GHSA-jjjj-jwhf-8rgr)
 - [PostgreSQL release notes](https://www.postgresql.org/docs/release/)
 - [MongoDB 7.0 release notes](https://www.mongodb.com/docs/manual/release-notes/7.0/)
 - [OPNsense releases](https://docs.opnsense.org/releases.html)

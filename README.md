@@ -34,6 +34,7 @@ Argo CD sequence rebuilds the cluster from scratch.
 - [Workloads](#workloads)
 - [Consensus trading stack](#consensus-trading-stack)
 - [Observability: evidence, freshness, and lineage](#observability-evidence-freshness-and-lineage)
+- [Notable engineering incidents](#notable-engineering-incidents)
 - [Screenshots](#screenshots)
 - [Design tradeoffs and open items](#design-tradeoffs-and-open-items)
 - [Software inventory](#software-inventory)
@@ -84,7 +85,7 @@ flowchart TB
                     GL["GitLab + Runner"]
                     UNIFI["UniFi controller"]
                     OBS["Grafana / InfluxDB / Telegraf"]
-                    MISC["homepage · registry · squid<br/>market-stress · maxmind · text-cleaner<br/>apikey-monitor · ollama-hunter"]
+                    MISC["homepage · registry · squid<br/>market-stress · maxmind · text-cleaner<br/>gitscout · oil-dashboard · freshrss · openspeedtest"]
                 end
             end
             NAS["OpenMediaVault VM<br/>backup staging"]
@@ -137,15 +138,15 @@ plus a restore test are the top open items.
 
 ## Talos Kubernetes cluster
 
-Three Talos Linux **v1.13.6** VMs, each a combined control-plane + worker, form an
-etcd-HA cluster sharing an L2 virtual IP for the Kubernetes API.
+Three Talos Linux **v1.13.10** VMs, each a combined control-plane + worker, form an
+etcd-HA cluster sharing an L2 virtual IP for the Kubernetes API (Kubernetes v1.36.4).
 
 ```mermaid
 flowchart TB
     subgraph FACTORY["Talos Image Factory (schematic)"]
         EXT["officialExtensions:<br/>iscsi-tools · util-linux-tools · qemu-guest-agent"]
     end
-    ISO["metal-amd64 ISO v1.13.6"] --> N1 & N2 & N3
+    ISO["metal-amd64 ISO v1.13.10"] --> N1 & N2 & N3
     FACTORY --> ISO
 
     subgraph CLUSTER["etcd quorum · API VIP"]
@@ -176,13 +177,13 @@ Helm-installed, every chart version-pinned in the repo.
 
 | Component | Version | Function | Notable decision |
 |---|---|---|---|
-| **Cilium** | 1.19 | CNI, kube-proxy replacement, LB-IPAM + L2 announcements | Replaced MetalLB — its memberlist gossip was unstable alongside Cilium (ADR-002). L2 announced on the `ens18` interface; leader election via Kubernetes Leases. |
-| **Traefik** | v3.7.6 (chart 41.0.2) | Single ingress for the `*.lan` wildcard zone | One wildcard DNS record fronts all cluster apps. |
-| **Longhorn** | 1.12 | Replicated block storage / CSI, default StorageClass | `defaultReplicaCount = 2`; rebuild concurrency capped at 1 per node. |
-| **Argo CD** | v3 | GitOps engine | ApplicationSet git-directory generator creates one Application per `cluster/apps/*`. |
-| **Sealed Secrets** | 0.38.4 | Secrets committed to git as ciphertext | Sealing key is part of the backup set. |
-| **metrics-server** | — | Resource metrics (`kubectl top`) | |
-| **registry:2 / registry:3** | 3.1.1 | In-cluster image registry fed by CI | Chosen over the GitLab registry to avoid a `gitlab-ctl reconfigure` on the primary GitLab; Talos trusts it via an HTTP registry mirror (no reboot). |
+| **Cilium** | 1.20.1 (chart 1.20.1) | CNI, kube-proxy replacement, LB-IPAM + L2 announcements | Replaced MetalLB — its memberlist gossip was unstable alongside Cilium (ADR-002). L2 announced on the `ens18` interface; leader election via Kubernetes Leases. Hubble relay + UI enabled for cluster-wide flow observability. |
+| **Traefik** | v3.7.13 (chart 41.5.0) | Single ingress for the `*.lan` wildcard zone | One wildcard DNS record fronts all cluster apps. Patched twice off the initial v3.7.6 pin to clear [GHSA-3ccp-42pg-hgv6](https://github.com/traefik/traefik/security/advisories/GHSA-3ccp-42pg-hgv6). |
+| **Longhorn** | 1.12.1 | Replicated block storage / CSI, default StorageClass | `defaultReplicaCount = 2`; rebuild concurrency capped at 1 per node. Least-effort replica auto-balance enabled after a placement imbalance cascaded into an outage (see [Notable engineering incidents](#notable-engineering-incidents)). |
+| **Argo CD** | v3.5.2 (chart 10.8.2) | GitOps engine | ApplicationSet git-directory generator creates one Application per `cluster/apps/*`. |
+| **Sealed Secrets** | 0.39.1 | Secrets committed to git as ciphertext | Sealing key is part of the backup set. |
+| **metrics-server** | chart 3.14.0 (app 0.9.0) | Resource metrics (`kubectl top`) | |
+| **registry:3** | 3.1.1 | In-cluster image registry fed by CI | Chosen over the GitLab registry to avoid a `gitlab-ctl reconfigure` on the primary GitLab; Talos trusts it via an HTTP registry mirror (no reboot). PVC grown 10Gi→20Gi after legitimate SHA-tag churn filled it; tag-retention policy is still open. |
 
 ## GitOps delivery
 
@@ -264,25 +265,31 @@ credential handling, DNS reconciliation, service validation — is one `tofu app
 
 | App | Image | Function |
 |---|---|---|
-| GitLab CE + Runner | `gitlab-ce:19.1.2` · `gitlab-runner:v19.1.1` | Source control, CI, GitOps origin; Kubernetes-executor runner with MinIO cache; separate DR replication path |
-| UniFi Network | `linuxserver/unifi-network-application` + `mongo:7.0` | Wi-Fi controller; rebuilt from a `.unf` backup so both APs re-adopted without reset |
+| GitLab CE + Runner | `gitlab-ce:19.3.1` · `gitlab-runner:v19.3.1` | Source control, CI, GitOps origin; Kubernetes-executor runner with Silo cache. A separate GitLab DR stack was built, then removed (see [Notable engineering incidents](#notable-engineering-incidents)). |
+| UniFi Network | `linuxserver/unifi-network-application` (digest-pinned) + `mongo:7.0.40` | Wi-Fi controller; rebuilt from a `.unf` backup so both APs re-adopted without reset |
 | Homepage | `gethomepage/homepage:v2.2.0` | Service portal |
 | Backrest | `backrest:v1.14.1` (restic) | Backup UI to a NAS SFTP repository |
-| Grafana / InfluxDB / Telegraf | `grafana:13.1.0` · `influxdb:2.9.1` · `telegraf:1.39.1` | Latency + host power/thermal telemetry |
-| MinIO | `pgsty/silo:RELEASE.2026-09-03T13-18-01Z` | Runner cache + Longhorn backup target. Migrated off `minio/minio` after Docker Hub deleted the repo (Apr 2026 archival); Silo is a maintained fork, same protocol/on-disk format. |
+| Grafana / InfluxDB / Telegraf | `grafana:13.2.1` · `influxdb:2.9.1` · `telegraf:1.39.3` | Latency + host power/thermal telemetry |
+| Silo | `pgsty/silo:RELEASE.2026-09-03T13-18-01Z` | S3-compatible object storage: runner cache + Longhorn backup target. Replaced MinIO after upstream `minio/minio` was archived (vendor moved to a commercial product) and left an S3 session-policy CVE ([GHSA-jjjj-jwhf-8rgr](https://github.com/minio/minio/security/advisories/GHSA-jjjj-jwhf-8rgr), CVSS 8.1) permanently unpatched; Docker Hub then deleted the image outright. Silo is a maintained fork — identical protocol, env vars, and on-disk format — so the cutover needed no data migration. |
+| OpenSpeedTest | `openspeedtest/latest` (digest-pinned) | Browser-based LAN/WAN speed test |
 | Squid | built | Forward proxy for LAN devices |
-| Semaphore | `semaphore:v2.18.27` + `postgres:16` | Ansible automation UI |
+| Semaphore | `semaphore:v2.19.12` + `postgres:16.15` | Ansible automation UI |
 
 **Self-built** (each delivered through the same GitOps flow)
 
 | App | Function |
 |---|---|
-| apikey-monitor | Detects exposed/leaked API keys |
-| ollama-hunter | Dashboard over a scanner that finds publicly exposed AI (Ollama / LM Studio) endpoints |
+| gitscout | GitHub API scanner + dashboard (DuckDB) that flags exposed credentials in accessible repos; replaced apikey-monitor |
+| oil-dashboard | Oil/gas market intelligence dashboard — scrapers, scenario engine, FastAPI + APScheduler refresh |
+| freshrss | Self-hosted RSS/Atom reader; curated news corpus for a downstream summarization pipeline |
 | market-stress | Market-stress collector + dashboard (Dukascopy feed) |
 | maxmind-search | GeoLite2 IP geolocation lookup |
 | text-cleaner | Stateless text cleanup utility |
 | lan-ops / dns-sync | LAN operations stack; scheduled DNS-record sync (Python) |
+
+Decommissioned since the last write-up: **apikey-monitor** (archived — superseded by gitscout),
+**ollama-hunter** (removed), and a run of short-lived trading-bot experiments (ig-hedged-grid,
+straddle-rotator, trend-chop) that were each rolled back within days of deployment.
 
 ## Consensus trading stack
 
@@ -333,6 +340,38 @@ The rest of the telemetry stack — host power/thermals, per-node deep dives, na
 drill-downs, SNMP switch health, and network SLA/latency — is in the
 [Screenshots](#screenshots) gallery below.
 
+## Notable engineering incidents
+
+A few incidents from the last two months, each root-caused and fixed rather than patched over:
+
+- **GitLab DR removed for a circular dependency.** A CronJob-based DR stack backed GitLab up to a
+  Longhorn PVC, which itself backed up to in-cluster object storage — which also lived on Longhorn.
+  "Disaster recovery" never actually left the disk it was meant to protect against. It surfaced as
+  real Longhorn disk-pressure on one node. Removed rather than patched; true off-cluster DR is
+  tracked as an open item below.
+- **A replica-placement bug cascaded into an outage.** Longhorn had concentrated replicas on two of
+  three nodes; a routine memory-ballooning rollout faulted 12 volumes at once on the idle node's
+  neighbor, taking GitLab down and triggering a blind cluster-wide Argo CD sync. Fixed by enabling
+  least-effort replica auto-balance.
+- **MinIO forced off by an unpatchable CVE.** Upstream `minio/minio` was archived in April 2026 when
+  MinIO Inc. pivoted to a commercial product, leaving a CVSS-8.1 S3 session-policy bypass
+  ([GHSA-jjjj-jwhf-8rgr](https://github.com/minio/minio/security/advisories/GHSA-jjjj-jwhf-8rgr))
+  permanently unfixed; Docker Hub then deleted the image outright. Migrated to Silo, a maintained
+  fork with an identical on-disk format — no data migration step needed.
+- **A network topology change blind-spotted its own dashboard.** Moving the management path to a
+  new OVS bond and adding a lab bridge left the Proxmox Host dashboard silently querying interfaces
+  that no longer existed, until the panels were reworked against the real bond/datapath state.
+- **Alerting shipped, then had to fix its own false positives.** Email alerting went out over the
+  existing Mailu stack with six starter rules; all six had to be paused within hours on false
+  positives, then fixed in stages — a self-referential query bug, a missing reduce stage, and a
+  tag-column issue breaking `max()` in two rules. Separately, the dashboard ConfigMap grew past
+  Kubernetes' 256 KiB `last-applied-configuration` annotation limit and had to move to server-side
+  apply.
+
+Longer-form root-cause writeups (etcd `fsync` starvation, kernel PSI stalls, host power/thermal
+tuning) are in the migration repository's documentation set — see [Documentation](#documentation)
+below.
+
 ## Screenshots
 
 Captured from the live cluster. Internal addresses masked; third-party data redacted.
@@ -362,11 +401,8 @@ IPs, hostnames, node/pod names, and `.lan` URLs are masked or kept out of frame.
 
 ![Market stress dashboard](screenshots/public/market-stress.png)
 
-**ollama-hunter** — exposed-endpoint scanner (victim IPs and geolocation columns blacked out)
-
-![Ollama exposure monitor](screenshots/public/ollama-hunter.png)
-
-**apikey-monitor** — summary panel only; the list of third-party vulnerable repositories is deliberately excluded
+**apikey-monitor** (retired, screenshot kept for reference) — summary panel only; the list of
+third-party vulnerable repositories is deliberately excluded
 
 ![API key exposure monitor summary](screenshots/public/apikey-monitor.png)
 
@@ -374,13 +410,14 @@ IPs, hostnames, node/pod names, and `.lan` URLs are masked or kept out of frame.
 
 | Item | State | Rationale |
 |---|---|---|
-| 3× combined control-plane+worker | Done | etcd HA on scarce RAM; day-2 target is 2 hot app nodes + 1 platform-biased (tainted) node |
+| 2 app-tier nodes + 1 tainted platform node | Done, live since 2026-07-12 | etcd HA on scarce RAM; platform components (Argo, Traefik, metrics-server, Sealed Secrets) tolerate and land on the tainted node, app workloads are constrained to the other two |
 | Node disks on battery-cached RAID 10 | Done | Eliminated the etcd `fsync`-starvation failure class |
 | Full GitOps loop (git→CI→registry→Argo) | Done, verified | No click-ops; secrets sealed |
 | Both legacy Docker hosts retired | Done | Cluster carries the entire live workload |
-| Off-host encrypted backup + restore test | Open | Staging is on a same-host VM; single-host risk remains |
+| True off-cluster disaster recovery | Open | Longhorn backs up to in-cluster Silo; GitLab DR was built, then removed for backing up onto the same disk it was meant to protect against |
 | RAID 0 boot → mirrored SSDs | Open (hardware-gated) | Boot array has no fault tolerance |
 | Platform charts → Argo-managed Applications | Open (ADR-001) | Cilium stays bootstrap (it is the CNI); the rest convert to GitOps |
+| In-cluster registry auth/TLS | Open | LAN-only, HTTP; add basic-auth + TLS before it holds anything sensitive |
 | Alerting, placement policy, DNS hygiene | In progress | Soak-phase day-2 work |
 
 ## Documentation
