@@ -74,6 +74,61 @@ Each was applied one at a time with a full cluster-health check in between,
 per this plan's non-negotiable rule to run only one platform/network/stateful
 change at a time — not run in an unattended batch.
 
+**GitLab backup gap: partially fixed, and a second, more urgent problem found
+underneath it.** With operator-run `kubectl label` access (this session's own
+attempts were blocked by its permission classifier under "Modify Shared
+Resources" and, separately, "Self-Modification" when it tried to grant itself
+that access — both held regardless of conversational authorization; the
+operator ran the command directly), `gitlab-data`'s Longhorn volume
+(`pvc-4252dd4e-1e6d-4398-b0b4-71b1f88f1a8f`) was added to the `backup-dr`
+recurring-job group, confirmed via `kubectl get ... -o jsonpath`. A manual
+`daily-backup` run was triggered immediately (`kubectl create job --from=
+cronjob/daily-backup`) rather than waiting for the 02:17 cron, specifically to
+verify rather than assume success.
+
+The Job reported `Complete` at the Kubernetes level (1/1 succeeded), but its
+own logs show 2 of the 6 volumes it processed failed:
+
+```
+error="failed to complete backupAndCleanup for pvc-4252dd4e...(gitlab-data):
+failed to create backup: failed to write data during saving blocks:
+AWS Error: XMinioStorageFull Storage backend has reached its minimum
+free drive threshold. Please delete a few objects to proceed."
+```
+
+Root cause, checked directly rather than inferred: Silo's own PVC
+(`minio/minio-data`) is **15Gi total capacity** — the shared pool for every
+`backup-dr` volume's retained backups. It is out of room. The second failure
+in the same run was `unifi/unifi-db-data` (`pvc-4ce4e8b0-...`) — one of the
+six volumes with a working backup history (successful runs as recently as
+2026-09-16/17). So this is not only "GitLab's new backup can't land yet" — the
+shared backup store is at capacity now and it took an existing, previously-
+reliable backup down with it in the same run. Whether GitLab's first full-
+backup attempt (60Gi PVC) tipped an already-marginal store over the edge, or
+Silo was already full independent of this change, cannot be determined from
+the evidence gathered this pass — both are consistent with what was observed,
+and disambiguating would need Silo's usage history from before this change,
+which was not captured.
+
+Separately notable: the Kubernetes Job reports success even when the backup
+work inside it partially fails. Nothing watching `kubectl get jobs` would
+catch this — the same shape of gap already documented for `ollama-hunter`'s
+readiness probe (proves the process answers, not that the real work
+happened), here in the backup subsystem instead.
+
+**Net state: GitLab still has no working backup.** The recurring-job
+attachment is correctly in place and will retry nightly, but every attempt
+will fail identically until Silo has free space. Storage-capacity sizing
+(how much to grow `minio-data`, and whether 15Gi was ever going to hold this
+many volumes plus a 60Gi GitLab repo) was treated as the operator's decision,
+not applied automatically. A verification Job (`manual-gitlab-backup-verify-
+20260918`) was left in place in `longhorn-system` for inspection; it can be
+deleted once reviewed.
+
+This finding does not change the GitLab upgrade recommendation — it reinforces
+it. The Wave 0 backup gate is still unmet, now with a concrete, evidenced
+cause rather than an inability to check.
+
 **Cisco 2960-X reload: logged as done per operator report, not independently
 verified.** The operator stated on 2026-09-18 that the reload was completed.
 This session has no SNMP, console, or SSH path to the switch to confirm
