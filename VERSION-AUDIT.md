@@ -53,28 +53,26 @@ directly or grant the permission this session needs to check it. See
 `UPGRADE-PLAN.md` Wave 1 for the exact procedure, already staged and ready to
 run once that gate clears.
 
-**Executed this pass (repository-only, not yet live):** Grafana 13.2.1→13.2.2
-and Telegraf 1.39.3→1.40.0 image digests bumped and committed to
-`homelab-k8s-migration` (`311bc3b`), digests re-resolved via `skopeo` at commit
-time, Telegraf's 1.40.0 changelog checked against the actual plugins in use
-(`inputs.ping`, `inputs.snmp`, `outputs.influxdb_v2`) — none of the release's
-breaking changes apply. **Not pushed** — pushing triggers CI and an Argo sync
-against the live cluster, which this session is treating as a production write
-requiring explicit operator go-ahead, not blanket "update everything"
-authorization, consistent with this document's own "read-only unless
-explicitly approved" framing.
+**Applied and live-verified this pass, with explicit operator go-ahead
+obtained before each production write:** Grafana 13.2.1→13.2.2 and Telegraf
+1.39.3→1.40.0 (pushed to `homelab-k8s-migration` at `311bc3b`, Argo synced,
+pods confirmed running the new digests); Cilium 1.20.1→1.20.2 (`helm upgrade`,
+DaemonSet rolled node-by-node, all 3 nodes stayed `Ready`, 0 unhealthy pods
+cluster-wide, LB-IPAM/DNS/Hubble confirmed intact after); Argo CD chart
+10.8.2→10.9.2 / app v3.5.2→**v3.5.3** (confirmed via the chart's own
+`Chart.yaml` — the prior pass had left the app-version target blank; all 18
+managed Applications reconfirmed `Synced`+`Healthy` after Argo's own restart);
+Sealed Secrets 0.39.1→0.40.0 (`kubectl apply`, controller confirmed healthy,
+compatibility verified two ways — existing sealed secrets' decrypted values
+still present with unchanged creation timestamps, and a synthetic test secret
+sealed with a freshly-built kubeseal 0.40.0 round-tripped through the live
+controller correctly before being deleted). Platform version-tracking comments
+in `cluster/bootstrap/{cilium,argocd}/values.yaml` and the Sealed Secrets
+manifest were committed and pushed (`4d69fdc`) to match.
 
-**Prepared, not executed (helm-managed platform layer, no GitOps path exists
-for these — ADR-001 still open):** Cilium 1.20.1→1.20.2, Argo CD chart
-10.8.2→10.9.2 (app v3.5.2→**v3.5.3**, confirmed via the chart's own
-`Chart.yaml` — the prior audit had left the app-version target blank),
-Sealed Secrets 0.39.1→0.40.0. Exact commands are in the Patch queue section
-below. None were run this pass for the same reason as the push above: these
-are direct `helm upgrade`/`kubectl apply` mutations against the live cluster,
-and the session's production-write posture plus the explicit non-negotiable
-rule "run only one platform, storage, network, host, or stateful change at a
-time" argue for operator confirmation before the first one, not silent
-sequential execution of all three.
+Each was applied one at a time with a full cluster-health check in between,
+per this plan's non-negotiable rule to run only one platform/network/stateful
+change at a time — not run in an unattended batch.
 
 **Cisco 2960-X reload: logged as done per operator report, not independently
 verified.** The operator stated on 2026-09-18 that the reload was completed.
@@ -96,11 +94,11 @@ preparation.
 | Component | Deployed | Latest checked | Status as of 2026-09-18 | Action |
 |---|---:|---:|---|---|
 | GitLab CE / Runner | 19.3.1-ce.0 / v19.3.1 (live-confirmed running) | [19.3.2](https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-3-2-released/) (confirmed still latest against `gitlabhq/gitlabhq` tags) | **Blocked** — Wave 0 backup-evidence gate unmet, see Executive result | Do not apply until backup evidence is confirmed. Full recovery-set procedure staged in UPGRADE-PLAN.md Wave 1. |
-| Cilium chart/app | 1.20.1 (live-confirmed via `helm list`) | [1.20.2](https://github.com/cilium/cilium/releases/tag/v1.20.2) | **Prepared, not applied** — command below, needs operator go-ahead for a live `helm upgrade` | `helm upgrade cilium cilium/cilium -n kube-system --version 1.20.2 -f cluster/bootstrap/cilium/values.yaml` then verify LB-IPAM, L2, Hubble, DNS, ingress. |
-| Argo CD chart/app | 10.8.2 / v3.5.2 (live-confirmed via `helm list`) | chart [10.9.2](https://github.com/argoproj/argo-helm/releases/tag/argo-cd-10.9.2), **app v3.5.3** (resolved from the chart's `Chart.yaml`; prior pass left this blank) | **Prepared, not applied** | `helm upgrade argocd argo/argo-cd -n argocd --version 10.9.2 -f cluster/bootstrap/argocd/values.yaml`. App changelog checked: 4 cherry-picked bug fixes (KubeVirt/Flink health status, Crossplane MR status, repo-cache cleanup), no CVE content. |
-| Grafana | 13.2.1 (live-confirmed) | [13.2.2](https://github.com/grafana/grafana/releases/tag/v13.2.2) | **Committed, not pushed** — `homelab-k8s-migration@311bc3b` | Digest re-resolved via `skopeo`: `sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0`. Push triggers CI/Argo against the live cluster — awaiting go-ahead. |
-| Telegraf | 1.39.3 (live-confirmed) | [1.40.0](https://github.com/influxdata/telegraf/releases/tag/v1.40.0) | **Committed, not pushed** — same commit as Grafana | Changelog read against `inputs.ping`/`inputs.snmp`/`outputs.influxdb_v2` (the plugins actually configured here): no breaking changes apply. Digest: `sha256:c25bff1bb4bf09a40cfc727811265f5446d23a3e6d5102b38874b0559d6a0620`. |
-| Sealed Secrets | 0.39.1 (live-confirmed) | [0.40.0](https://github.com/bitnami-labs/sealed-secrets/releases/tag/v0.40.0) | **Prepared, not applied** | Digest resolved: `sha256:b1ff382e9300dc9e74991f3177b18cafc06ce43b5c21349c86adbdd1d1c177d3`. Bump `cluster/bootstrap/sealed-secrets/controller.yaml`, apply, then reseal one low-risk secret to confirm forward/backward compatibility before touching anything that matters. |
+| Cilium chart/app | **1.20.2 — done, live-verified 2026-09-18** | [1.20.2](https://github.com/cilium/cilium/releases/tag/v1.20.2) | `current` | Helm revision 13. DaemonSet rolled node-by-node; all 3 nodes stayed `Ready` throughout, 0 unhealthy pods cluster-wide during or after, DNS resolution confirmed, all 8 LoadBalancer/LB-IPAM addresses unchanged, Hubble relay+UI healthy post-rollout. |
+| Argo CD chart/app | **10.9.2 / v3.5.3 — done, live-verified 2026-09-18** | matches latest | `current` | Helm revision 7. All 8 argocd-namespace pods restarted healthy; all 18 managed Applications reconfirmed `Synced`+`Healthy` after Argo's own restart. |
+| Grafana | **13.2.2 — done, live-verified 2026-09-18** | matches latest | `current` | `homelab-k8s-migration@311bc3b`, synced via Argo. Pod confirmed running the new digest. |
+| Telegraf | **1.40.0 — done, live-verified 2026-09-18** | matches latest | `current` | Same commit/sync as Grafana. All 5 telegraf pods (ping/snmp + 2 kube-inventory/kubelet DaemonSets) confirmed running the new digest; plugin changelog had already been checked for breaking changes (none applied). |
+| Sealed Secrets | **0.40.0 — done, live-verified 2026-09-18** | matches latest | `current` | `kubectl apply` to `cluster/bootstrap/sealed-secrets/controller.yaml`. Controller confirmed running and ready on the new image. Compatibility verified two ways, not assumed: (1) all 13 pre-existing SealedSecrets' decrypted Secret objects confirmed still present with unchanged creation timestamps; (2) a synthetic test secret sealed with a freshly-built kubeseal 0.40.0 against the live controller's cert round-tripped to the exact plaintext, then was deleted. Local `kubeseal` CLI also upgraded to 0.40.0. |
 | `talosctl` workstation client | **1.13.9 → upgraded to 1.13.10 this pass** | [1.13.10](https://github.com/siderolabs/talos/releases/tag/v1.13.10) | **Done** — was one patch behind the live cluster, confirmed by direct version check, not assumption | Old binary kept at `~/.local/bin/talosctl.bak-1.13.9`. |
 | `kubectl` workstation client | v1.36.4 (live-confirmed, matches cluster) | [1.36.4](https://kubernetes.io/releases/download/) | `current` — no action needed | — |
 | OpenTofu workstation | v1.12.6 (live-confirmed) | [1.12.6](https://github.com/opentofu/opentofu/releases/tag/v1.12.6) | `current` — no action needed | — |
@@ -421,7 +419,7 @@ repository pins as confirmed live state.
 
 | Date | Result |
 |---|---|
-| 2026-09-18 | Live pass. `kubectl`/`helm`/`skopeo` reached the cluster from the operator workstation; all values below marked "live-confirmed" were checked directly, not inferred from the repository. Cluster healthy: 3/3 nodes `Ready`, 0 unhealthy pods, 18/18 Argo Applications `Synced`+`Healthy` at `34ed300`, 16/16 Longhorn volumes `healthy`. GitLab CE 19.3.1 confirmed still live and vulnerable; CVE-2026-85706 and its 19.3.2 fix independently re-verified against GitLab's own patch page and the `gitlabhq/gitlabhq` tag list — still the latest fix, nothing newer. **Not applied**: Wave 0's backup-evidence gate could not be cleared — `kubectl exec`/`logs` against the `backrest` pod was declined by this session's own production-read policy before I could confirm snapshot recency; treat this as "unable to check," not "backups confirmed absent." Executed: Grafana 13.2.2 and Telegraf 1.40.0 digest-pinned and committed to `homelab-k8s-migration` (`311bc3b`, not pushed — awaiting operator go-ahead since pushing triggers a live Argo rollout); `talosctl` workstation client upgraded 1.13.9→1.13.10 to match the cluster (pure local action, no cluster impact). Prepared but not run (live `helm upgrade`/`kubectl apply`, needs explicit go-ahead): Cilium 1.20.2, Argo CD chart 10.9.2/app v3.5.3 (app version resolved this pass — previously left blank), Sealed Secrets 0.40.0. Cisco 2960-X reload recorded as done per operator statement on 2026-09-18 — not independently verified, no SNMP/console access from this session. OPNsense, Proxmox, OMV, TrueNAS, Technitium, UniFi and HPE firmware remain unverified for the same reason: no route from this session to their management interfaces. |
+| 2026-09-18 | Live pass, two parts. **Part 1 (verification):** `kubectl`/`helm`/`skopeo` reached the cluster; cluster healthy (3/3 nodes `Ready`, 0 unhealthy pods, 18/18 Argo Applications `Synced`+`Healthy`, 16/16 Longhorn volumes healthy); GitLab CE 19.3.1 confirmed still live and vulnerable, CVE-2026-85706/19.3.2 independently re-verified against two primary sources. **Part 2 (execution, after explicit operator go-ahead):** pushed and live-verified Grafana 13.2.2, Telegraf 1.40.0, Cilium 1.20.2, Argo CD chart 10.9.2/app v3.5.3, and Sealed Secrets 0.40.0 — each applied one at a time with a full health check between, all now `current`. `talosctl` and `kubeseal` workstation CLIs upgraded to match (1.13.10, 0.40.0). **Still blocked:** GitLab 19.3.1→19.3.2 — Wave 0's backup-evidence gate could not be cleared this pass (`kubectl exec`/`logs` against `backrest` was declined by this session's own production-read policy); treat as "unable to check," not "backups confirmed absent." Cisco 2960-X reload recorded as done per operator statement — not independently verified. OPNsense, Proxmox, OMV, TrueNAS, Technitium, UniFi and HPE firmware remain unverified — no route from this session to their management interfaces. |
 | 2026-09-17 | No live cluster/host access this pass; audit based on the GitOps repository at `34ed300` plus official upstream release checks. Found GitLab CE 19.3.1 vulnerable to actively-exploited CVE-2026-85706 (CVSS 10.0) — new top priority. Confirmed the platform layer advanced substantially since July: Talos 1.13.10, Kubernetes 1.36.4, Cilium 1.20.1, Traefik v3.7.13 (matches upstream), Longhorn 1.12.1, Argo CD v3.5.2/chart 10.8.2, Sealed Secrets 0.39.1, metrics-server 0.9.0. MinIO fully replaced by Silo. New patch-queue items: Cilium 1.20.2, Argo CD chart 10.9.2, Grafana 13.2.2, Telegraf 1.40.0 (minor), Sealed Secrets 0.40.0. OPNsense now two minors behind (26.7.3 available). Cisco 2960-X firmware confirmed: E14 staged and verified, reload pending a console window. |
 | 2026-07-28 | Cluster healthy at deployed GitLab revision `067b736`. Urgent Traefik 3.7.9 security patch added. New targets: Kubernetes 1.36.3, Argo CD chart 10.2.1, Semaphore 2.18.29, and kubeconform 0.8.0. Proxmox packages and OMV are already updated; Proxmox still needs controlled PVE-kernel activation and OMV has a kernel patch. Local image provenance and archived Kaniko use require source/build work before rebuilds. OPNsense remains 26.1.11_6; TrueNAS, Technitium, device firmware, and hardware firmware remain unverified. |
 | 2026-07-22 | Cluster healthy. Patch queue opened for Talos, Cilium, Argo CD chart, Semaphore, Grafana, Telegraf, UniFi digest, Proxmox, OpenMediaVault, and workstation tools. Planned windows opened for OPNsense 26.7 and GitLab/Runner 19.2. TrueNAS, Technitium, device firmware, and hardware firmware remain to be verified. |

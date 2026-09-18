@@ -123,11 +123,11 @@ Recorded here so the queue below only shows what is actually still open:
 |---:|---|---|---|---|---|
 | 0 | Recovery and health gates | Current baseline | Read-only checks and backup verification | Blocking gate | **Partially cleared 2026-09-18**: node/pod/Argo/Longhorn health all live-confirmed good. Backup evidence for GitLab NOT cleared — `backrest` pod is `Running` but its snapshot state could not be inspected this pass (exec/logs access declined). This is the reason Wave 1 is still blocked. |
 | 1 | GitLab critical security patch | 19.3.1-ce.0 / v19.3.1 to 19.3.2 | Stateful application upgrade | Critical, actively-exploited CVE | **Blocked on Wave 0** — CVE re-confirmed live and current 2026-09-18 (still the latest fix); do not proceed until backup evidence is independently confirmed. |
-| 2A | Cilium | 1.20.1 to 1.20.2 | Repository MR, then native Helm/Cilium upgrade | High, cluster network | **Prepared 2026-09-18** — exact `helm upgrade` command in VERSION-AUDIT.md Patch queue; not run, awaiting operator go-ahead for a live network-plane change. |
-| 2B | Argo CD chart | 10.8.2 to 10.9.2 (app v3.5.2 to **v3.5.3**, resolved 2026-09-18) | Repository MR, then native Helm upgrade | Medium | **Prepared 2026-09-18**, not applied. App changelog reviewed: bug fixes only, no CVE content. |
-| 2C | Sealed Secrets | 0.39.1 to 0.40.0 | Controller + `kubeseal` CLI together | Medium | **Prepared 2026-09-18** (digest resolved), not applied. Reseal-compatibility check still required first. |
-| 2D | Grafana | 13.2.1 to 13.2.2 | GitOps image pin | Low to medium | **Committed 2026-09-18**, not pushed — `homelab-k8s-migration@311bc3b`. |
-| 2E | Telegraf | 1.39.3 to 1.40.0 (minor) | GitOps image pin | Medium | **Committed 2026-09-18**, not pushed — same commit as 2D. Plugin changelog reviewed against `inputs.ping`/`inputs.snmp`/`outputs.influxdb_v2`: no breaking changes apply. |
+| 2A | Cilium | 1.20.1 to 1.20.2 | Native Helm upgrade | High, cluster network | **Done, live-verified 2026-09-18.** Helm rev 13; all 3 nodes stayed `Ready`, 0 unhealthy pods, LB-IPAM/DNS/Hubble confirmed intact. |
+| 2B | Argo CD chart | 10.8.2 to 10.9.2 (app v3.5.2 to **v3.5.3**) | Native Helm upgrade | Medium | **Done, live-verified 2026-09-18.** Helm rev 7; all 18 managed Applications reconfirmed Synced+Healthy after. |
+| 2C | Sealed Secrets | 0.39.1 to 0.40.0 | `kubectl apply` + `kubeseal` CLI | Medium | **Done, live-verified 2026-09-18.** Reseal compatibility proven both directions (existing secrets intact; new synthetic secret round-tripped correctly), not just checked-then-hoped. |
+| 2D | Grafana | 13.2.1 to 13.2.2 | GitOps image pin | Low to medium | **Done, live-verified 2026-09-18** — `homelab-k8s-migration@311bc3b`, pushed, Argo synced, pod confirmed on new digest. |
+| 2E | Telegraf | 1.39.3 to 1.40.0 (minor) | GitOps image pin | Medium | **Done, live-verified 2026-09-18** — same commit as 2D; all 5 telegraf pods confirmed on new digest. |
 | 3 | Registry hardening | No auth/TLS, no retention policy | Repository MR + native config | Medium, exposure | Not touched this pass. |
 | 4 | Local build engine | Kaniko (archived) to pinned BuildKit rootless | Repository + CI change | Low to medium | Not touched this pass. |
 | 5 | Cilium/Talos/Kubernetes minors | Talos 1.14.1, Kubernetes 1.37.0 | Talos Image Factory + coordinated upgrade | High, node/control-plane | Not touched this pass — explicitly out of scope for an unattended pass per this plan's own node-by-node soak requirement. |
@@ -176,20 +176,27 @@ actually attempted.
    GitLab's own patch-notes page and the `gitlabhq/gitlabhq` GitHub mirror's
    tag list, rather than trusting the prior citation.
 
-**Deliberately not executed, with the specific reason for each:**
-- **`git push` of `311bc3b`** — not run. Pushing triggers CI and an Argo sync
-  against the live cluster; that is a production write and a "pushing code"
-  action, which this session treats as needing explicit go-ahead regardless
-  of the general instruction to get things updated, consistent with this
-  plan's own Non-negotiable rule 5 ("a pushed branch is preparation, not
-  approval to deploy").
-- **Cilium 1.20.2, Argo CD chart 10.9.2, Sealed Secrets 0.40.0** — commands
-  prepared (see VERSION-AUDIT.md Patch queue) but not run. These require a
-  direct `helm upgrade`/`kubectl apply` against the live cluster (there is no
-  GitOps path for the platform layer — ADR-001 is still open), and
-  Non-negotiable rule 2 requires one platform change at a time with observed
-  health between each, which is better done with the operator watching than
-  run unattended in sequence.
+**Update, same day:** the operator explicitly confirmed proceeding with the
+four items below after reviewing this log. All four were then executed, one
+at a time, each verified healthy before starting the next — see the Current
+queue table above for the verification evidence on each (2A–2E). `git push`
+of `311bc3b`, then `helm upgrade cilium`, then `helm upgrade argocd`, then
+`kubectl apply` for Sealed Secrets plus a real reseal round-trip test. The
+reasoning below for why they were initially held is kept as a record of the
+decision process, not because it still describes the current state.
+
+**Originally deliberately not executed, with the specific reason for each —
+now executed per the update above, except GitLab:**
+- **`git push` of `311bc3b`** — originally held because pushing triggers CI
+  and an Argo sync against the live cluster, a production write needing
+  explicit go-ahead beyond the general instruction to get things updated,
+  per Non-negotiable rule 5. **Now done** — pushed, synced, verified.
+- **Cilium 1.20.2, Argo CD chart 10.9.2, Sealed Secrets 0.40.0** — originally
+  held because these require a direct `helm upgrade`/`kubectl apply` against
+  the live cluster (no GitOps path for the platform layer — ADR-001 is still
+  open) and Non-negotiable rule 2 requires one platform change at a time with
+  observed health between each. **Now done** — all three applied in sequence,
+  each verified healthy before the next started, per the Current queue table.
 - **GitLab 19.3.1 → 19.3.2** — not run. This is the one item where declining
   to act also has a real cost (CVSS 10.0, actively exploited, KEV-listed), so
   this was not a default-to-caution call made lightly. It was not run
