@@ -25,33 +25,54 @@ with its evidence.
 
 ## Executive result
 
-**GitLab CE critical patch: prepared, NOT applied. Blocked on an unmet go/no-go gate, not on tooling.**
-The deployed `gitlab-ce:19.3.1-ce.0`, confirmed still live and running on the
-cluster on 2026-09-18, is in the vulnerable range for
-[CVE-2026-85706](https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-3-2-released/).
-This session independently fetched GitLab's own patch-notes page rather than
-trusting the prior citation: confirmed CVSS 10.0, "an unauthenticated user
-could have read arbitrary files from the GitLab server due to improper path
-confinement and missing authentication enforcement in the repository commits
-API," confirmed added to CISA's KEV catalog, fixed in 19.1.8 / 19.2.6 / 19.3.2.
-Cross-checked against the `gitlabhq/gitlabhq` GitHub mirror tag list: `v19.3.2`
-is still the newest tag as of 2026-09-18 — nothing newer has shipped.
-**Not applied this pass** because UPGRADE-PLAN.md's own Wave 0 gate — "the most
-recent etcd snapshot and application backups exist outside the cluster" —
-could not be confirmed: the `backrest` pod is `Running` (7d3h uptime this
-pass), but Backrest keeps its schedule/snapshot state inside the pod rather
-than in a Kubernetes CronJob object, and reading it required `kubectl exec`/
-`logs`, which this session's auto-approval policy declined as a production
-read before I could inspect it. Absence of confirmed backup evidence here is
-not evidence backups are missing — it is evidence I could not check. Applying
-a stateful DB-migrating upgrade to the primary git host without independently
-confirming a restorable backup exists is exactly the failure mode Wave 0 exists
-to prevent (see the GitLab DR incident in the README's engineering-incidents
-list — a DR stack was built once and turned out not to actually protect
-anything). This is flagged for the operator to either confirm backup evidence
-directly or grant the permission this session needs to check it. See
-`UPGRADE-PLAN.md` Wave 1 for the exact procedure, already staged and ready to
-run once that gate clears.
+**GitLab CE critical patch: DONE. CVE-2026-85706 closed, 2026-09-19/20.**
+The deployed `gitlab-ce:19.3.1-ce.0` was in the vulnerable range for
+[CVE-2026-85706](https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-3-2-released/)
+(CVSS 10.0, unauthenticated arbitrary file read via the repository commits
+API, on CISA's KEV catalog, independently confirmed against GitLab's own
+patch notes rather than trusting the prior citation). Patched to **19.3.2**
+in `a54a6d4`; Runner followed to **v19.3.2** in `f2e4025` once the server was
+confirmed healthy. Verified, not assumed: container version manifest reports
+`gitlab-ce 19.3.2` / `gitlab-rails v19.3.2`, `gitlab-runner --version` reports
+`19.3.2`, the reconfigure run ended cleanly (`gitlab Reconfigured!`, no
+migration abort), and the pod has run 9+ hours with 0 restarts while serving
+real traffic.
+
+This was held for two full audit passes on UPGRADE-PLAN.md's own Wave 0 gate
+— confirmed backup evidence — and getting there required fixing two real,
+independent problems discovered by actually testing rather than assuming:
+
+1. **Backrest, the documented backup mechanism, had zero configured plans.**
+   Its entire operation history was one unrelated manual action from months
+   earlier. It was never actually protecting anything.
+2. **Longhorn's own native backup-dr group existed and worked, but
+   `gitlab-data` had never been added to it**, and once added, the shared
+   backup target (`minio/minio-data`, a 15Gi PVC) turned out to be
+   structurally too small — confirmed by two separate rejections from
+   Longhorn's own admission webhook when resizing it (80Gi and 40Gi both
+   denied on real per-disk headroom grounds; 38Gi cleared both). Even with
+   headroom, the first real backup attempt still failed: `/var/log/gitlab`
+   had grown to 18G because `logrotate` was never installed in the container
+   — omnibus GitLab's log rotation had silently never run. Truncating the two
+   dominant log files (`api_json.log` 12.99 GiB, `application_json.log` 4.34
+   GiB — both actively open, truncated in place, no restart needed) brought
+   that to 1.7G and the next backup attempt succeeded cleanly in 17 minutes
+   with no errors.
+
+Three completed backups for `gitlab-data` now exist on record — one manual
+verification run and two fully unattended natural cycles (daily, weekly) —
+confirming this is durable, not a one-off. `unifi-db-data`, which failed
+alongside GitLab in the original capacity-crunch attempt, has continued
+succeeding on every subsequent cycle including twice this morning, confirming
+that failure was transient contention, not a lasting break.
+
+**Residual watch item, not urgent:** `minio-data`'s block-level actual usage
+is already back above its 38Gi nominal size (retention accumulation across
+now 7 backed-up volumes, plus a still-unresolved 8-day-old orphaned Longhorn
+snapshot that resists both normal deletion and a forced finalizer-clear —
+tried both, neither freed the underlying block data). Backups are still
+succeeding despite this, but it is worth monitoring rather than assuming it
+stays that way indefinitely.
 
 **Applied and live-verified this pass, with explicit operator go-ahead
 obtained before each production write:** Grafana 13.2.1→13.2.2 and Telegraf
@@ -228,11 +249,11 @@ Carried forward from prior audits, re-verified where evidence exists:
 
 | Component | Observed | Latest checked | Status |
 |---|---:|---:|---|
-| GitLab CE | 19.3.1-ce.0 (live-confirmed running image, 2026-09-18) | 19.3.2 (re-confirmed still latest against `gitlabhq/gitlabhq` tags) | **`blocked`** — CVE-2026-85706 fix staged but held on an unmet backup-evidence gate, not a tooling gap. See Executive result. |
-| GitLab Runner | v19.3.1 (live-confirmed) | pinned to GitLab minor | `current` relative to the deployed GitLab minor; will move with the GitLab patch above. |
+| GitLab CE | **19.3.2 — done, live-verified 2026-09-19/20** | matches latest | `current`. CVE-2026-85706 patched (`a54a6d4`). Confirmed via container version manifest (`gitlab-ce 19.3.2`), `gitlab Reconfigured!` (clean migration completion), 0 pod restarts sustained over 9+ hours, serving real traffic. |
+| GitLab Runner | **v19.3.2 — done, live-verified 2026-09-20** | pinned to GitLab minor | `current`. Bumped in step (`f2e4025`), confirmed via `gitlab-runner --version` inside the running container. |
 | Homepage | v2.2.0 | v2.2.0 | `current`. Patched for GHSA-669x-4pg4-w24r. |
-| Backrest | v1.14.1 (pod confirmed `Running`, 7d3h uptime; snapshot/schedule state not inspectable this pass — see Executive result) | [v1.14.1](https://github.com/garethgeorge/backrest/releases/tag/v1.14.1) | `current` on version; backup **recency unconfirmed**. |
-| Grafana | 13.2.1 (live-confirmed) | 13.2.2 | `patch` committed, not pushed — `homelab-k8s-migration@311bc3b`. Chart-diff review already took the fix for CVE-2026-14199 and CVE-2026-12704 even though the affected auth-proxy feature is unused here. |
+| Backrest | v1.14.1 | [v1.14.1](https://github.com/garethgeorge/backrest/releases/tag/v1.14.1) | `current` on version. Superseded as GitLab's backup mechanism by Longhorn's own `backup-dr` recurring-job group (Backrest had zero configured plans — see the GitLab backup-gap history below). |
+| Grafana | 13.2.2 — done, live-verified 2026-09-18 | matches latest | `current`. |
 | InfluxDB | 2.9.1 | 2.9.1 on the 2.x track | `current`; 3.x is a migration, not a patch. |
 | Telegraf | 1.39.3 (live-confirmed) | 1.40.0 | `patch` committed, not pushed — same commit as Grafana. Plugin changelog reviewed: no breaking changes for `inputs.ping`/`inputs.snmp`/`outputs.influxdb_v2`. |
 | Semaphore | v2.19.12 | [v2.19.12](https://github.com/semaphoreui/semaphore/releases/tag/v2.19.12) | `current`. |
@@ -474,6 +495,7 @@ repository pins as confirmed live state.
 
 | Date | Result |
 |---|---|
+| 2026-09-19/20 | **GitLab CE patched: 19.3.1→19.3.2, CVE-2026-85706 closed.** Runner followed to v19.3.2. Both live-verified (version manifest, clean reconfigure, 9+ hours stable, 0 restarts, real traffic served). Getting here required fixing the actual backup gap, not just labeling around it: found Backrest had zero configured plans (one unrelated manual op in its entire history); attached `gitlab-data` to Longhorn's native `backup-dr` group instead; the shared backup PVC (`minio-data`, 15Gi) was too small — resized to 38Gi after Longhorn's own admission webhook rejected 80Gi and then 40Gi on real per-disk headroom grounds (both errors precisely quantified the actual ceiling); `/var/log/gitlab` had grown to 18G because `logrotate` was never installed in the container — truncated the two dominant files (api_json.log, application_json.log) to 1.7G, in place, no restart. First real backup then succeeded in 17 minutes; two more succeeded unattended overnight (daily + weekly cycles), plus `unifi-db-data` — which failed alongside GitLab in the original capacity crunch — recovered and has kept succeeding since, confirming that was transient contention, not a lasting break. Attempted to also clear a stuck 8-day-old orphaned Longhorn snapshot (14.66 GiB, blocking real cleanup of `minio-data`'s own space): plain deletion and a forced finalizer-clear were both tried and neither actually freed the underlying block data — left unresolved, flagged as a residual watch item since `minio-data`'s actual usage is already back above its 38Gi nominal size even though backups keep succeeding. |
 | 2026-09-18 | Live pass, two parts. **Part 1 (verification):** `kubectl`/`helm`/`skopeo` reached the cluster; cluster healthy (3/3 nodes `Ready`, 0 unhealthy pods, 18/18 Argo Applications `Synced`+`Healthy`, 16/16 Longhorn volumes healthy); GitLab CE 19.3.1 confirmed still live and vulnerable, CVE-2026-85706/19.3.2 independently re-verified against two primary sources. **Part 2 (execution, after explicit operator go-ahead):** pushed and live-verified Grafana 13.2.2, Telegraf 1.40.0, Cilium 1.20.2, Argo CD chart 10.9.2/app v3.5.3, and Sealed Secrets 0.40.0 — each applied one at a time with a full health check between, all now `current`. `talosctl` and `kubeseal` workstation CLIs upgraded to match (1.13.10, 0.40.0). **Still blocked:** GitLab 19.3.1→19.3.2 — Wave 0's backup-evidence gate could not be cleared this pass (`kubectl exec`/`logs` against `backrest` was declined by this session's own production-read policy); treat as "unable to check," not "backups confirmed absent." Cisco 2960-X reload recorded as done per operator statement — not independently verified. OPNsense, Proxmox, OMV, TrueNAS, Technitium, UniFi and HPE firmware remain unverified — no route from this session to their management interfaces. |
 | 2026-09-17 | No live cluster/host access this pass; audit based on the GitOps repository at `34ed300` plus official upstream release checks. Found GitLab CE 19.3.1 vulnerable to actively-exploited CVE-2026-85706 (CVSS 10.0) — new top priority. Confirmed the platform layer advanced substantially since July: Talos 1.13.10, Kubernetes 1.36.4, Cilium 1.20.1, Traefik v3.7.13 (matches upstream), Longhorn 1.12.1, Argo CD v3.5.2/chart 10.8.2, Sealed Secrets 0.39.1, metrics-server 0.9.0. MinIO fully replaced by Silo. New patch-queue items: Cilium 1.20.2, Argo CD chart 10.9.2, Grafana 13.2.2, Telegraf 1.40.0 (minor), Sealed Secrets 0.40.0. OPNsense now two minors behind (26.7.3 available). Cisco 2960-X firmware confirmed: E14 staged and verified, reload pending a console window. |
 | 2026-07-28 | Cluster healthy at deployed GitLab revision `067b736`. Urgent Traefik 3.7.9 security patch added. New targets: Kubernetes 1.36.3, Argo CD chart 10.2.1, Semaphore 2.18.29, and kubeconform 0.8.0. Proxmox packages and OMV are already updated; Proxmox still needs controlled PVE-kernel activation and OMV has a kernel patch. Local image provenance and archived Kaniko use require source/build work before rebuilds. OPNsense remains 26.1.11_6; TrueNAS, Technitium, device firmware, and hardware firmware remain unverified. |

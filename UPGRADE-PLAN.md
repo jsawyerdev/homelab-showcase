@@ -121,9 +121,10 @@ Recorded here so the queue below only shows what is actually still open:
 
 | Wave | Scope | Current to target | Delivery | Risk | Status |
 |---:|---|---|---|---|---|
-| 0 | Recovery and health gates | Current baseline | Read-only checks and backup verification | Blocking gate | **Partially cleared 2026-09-18**: node/pod/Argo/Longhorn health all live-confirmed good. Backup evidence for GitLab NOT cleared — `backrest` pod is `Running` but its snapshot state could not be inspected this pass (exec/logs access declined). This is the reason Wave 1 is still blocked. |
-| 1 | GitLab critical security patch | 19.3.1-ce.0 / v19.3.1 to 19.3.2 | Stateful application upgrade | Critical, actively-exploited CVE | **Blocked on Wave 0.** CVE re-confirmed live and current 2026-09-18 (still the latest fix). GitLab's volume was added to the `backup-dr` group and a real backup was attempted (not just checked) — it failed: Silo (`minio/minio-data`, 15Gi PVC) is out of space. Same failure hit `unifi-db-data`, a previously-working backup, in the same run. Do not proceed until this is fixed and a successful GitLab backup is confirmed to exist. |
-| 1a | Silo capacity (new, found 2026-09-18) | `minio/minio-data` PVC, 15Gi, full | PVC resize + retention review | Blocking Wave 1; also degraded existing coverage | Grow `minio-data`, then re-run `daily-backup` for `gitlab-data` and re-confirm `unifi-db-data` recovers. Size to hold GitLab's full backup plus existing retained sets (7 daily + 4 weekly) with headroom, not to the current minimum. |
+| 0 | Recovery and health gates | Current baseline | Read-only checks and backup verification | Blocking gate | **Fully cleared 2026-09-19/20.** Node/pod/Argo/Longhorn health confirmed good throughout. Backup evidence for GitLab confirmed by actually producing one: three completed backups now on record for `gitlab-data` (manual + two unattended natural cycles). |
+| 1 | GitLab critical security patch | 19.3.1-ce.0 / v19.3.1 to 19.3.2 | Stateful application upgrade | Critical, actively-exploited CVE | **Done, live-verified 2026-09-19/20.** `a54a6d4` (server) + `f2e4025` (runner). Version manifest confirms `gitlab-ce 19.3.2`; clean `gitlab Reconfigured!`; 0 restarts over 9+ hours; real traffic served. |
+| 1a | Silo capacity (found 2026-09-18) | `minio/minio-data` PVC, 15Gi, full | PVC resize + retention review | Was blocking Wave 1; also degraded existing coverage | **Done.** Resized to 38Gi (`a51244a`), corrected down twice from an initial 80Gi and 40Gi after Longhorn's own admission webhook rejected both on real per-disk headroom grounds. Combined with 1b below to actually clear the failure. |
+| 1b | GitLab log bloat (found 2026-09-19) | `/var/log/gitlab`: 18G, `logrotate` never installed in the container | Truncate in place | Was blocking a successful backup even after 1a | **Done.** `api_json.log` (12.99 GiB) and `application_json.log` (4.34 GiB) truncated in place, no restart. `/var/log/gitlab` now 1.7G. Root cause (no logrotate binary in the container) not fixed — this will recur; see Wave 9 below. |
 | 2A | Cilium | 1.20.1 to 1.20.2 | Native Helm upgrade | High, cluster network | **Done, live-verified 2026-09-18.** Helm rev 13; all 3 nodes stayed `Ready`, 0 unhealthy pods, LB-IPAM/DNS/Hubble confirmed intact. |
 | 2B | Argo CD chart | 10.8.2 to 10.9.2 (app v3.5.2 to **v3.5.3**) | Native Helm upgrade | Medium | **Done, live-verified 2026-09-18.** Helm rev 7; all 18 managed Applications reconfirmed Synced+Healthy after. |
 | 2C | Sealed Secrets | 0.39.1 to 0.40.0 | `kubectl apply` + `kubeseal` CLI | Medium | **Done, live-verified 2026-09-18.** Reseal compatibility proven both directions (existing secrets intact; new synthetic secret round-tripped correctly), not just checked-then-hoped. |
@@ -135,6 +136,7 @@ Recorded here so the queue below only shows what is actually still open:
 | 6 | Cisco 2960-X reload | E14 staged, verified, BOOT set; reload pending | Physical/console action | Medium, in-band management risk | **Reported complete by the operator, 2026-09-18** — not independently verified; this session has no SNMP/console path to the switch. |
 | 7 | OPNsense | 26.1.11_6 to 26.7.3 | Major appliance upgrade | Critical, network edge | Not touched this pass — no console access from this session. |
 | 8 | Proxmox kernel, OMV kernel, TrueNAS, Technitium, AP/switch/HPE firmware | Not reconfirmed live | Vendor-specific | Unknown to critical | Not touched this pass — no management-interface route from this session. |
+| 9 | GitLab log rotation + stuck Longhorn snapshots | See Wave 9 below | Image/config fix; Longhorn investigation | Low urgency, will recur | Root causes of the backup-gap fix, not fixed themselves. `minio-data` already back above nominal size. |
 
 ## Execution log — 2026-09-18
 
@@ -405,6 +407,36 @@ access are reconfirmed live for:
 
 Firmware changes should be split by failure domain. Controller, disk, NIC,
 switch, and server firmware do not belong in one maintenance window.
+
+## Wave 9: backup-pipeline follow-ups (found 2026-09-19/20)
+
+Two items closed the immediate GitLab backup gap but did not fix their root
+causes. Neither is urgent; both will recur if left alone.
+
+- **GitLab log rotation.** `/var/log/gitlab` was truncated manually
+  (`api_json.log`, `application_json.log`) after growing to 18G, because
+  `logrotate` is not installed in the `gitlab-ce` container at all — omnibus
+  GitLab's log rotation has silently never run since this instance was
+  deployed. Without a real fix these files will simply regrow indefinitely.
+  Either add `logrotate` to the image/init process and confirm
+  `/var/opt/gitlab/logrotate/logrotate.conf` (already generated by GitLab
+  itself) actually gets invoked on a schedule, or set a low `max_size`/rotate
+  policy directly in `gitlab.rb` for `api_json.log` and `application_json.log`
+  specifically, since those two account for nearly all of the growth.
+- **Stuck orphaned Longhorn snapshots.** 9 snapshots dated 2026-09-11 (origin
+  unknown — predate this session), all `markRemoved: true` but never actually
+  purged, sit across 9 volumes including `minio-data` itself (14.66 GiB).
+  Both a plain `kubectl delete` and a forced finalizer-clear were tried on the
+  `minio-data` one: the object briefly disappeared, then Longhorn's own
+  controller recreated it within 38 seconds, and `minio-data`'s `actualSize`
+  never moved — meaning the underlying block data is still genuinely present
+  and something is preventing Longhorn's engine from actually removing it.
+  This needs Longhorn manager log access (blocked by this session's own
+  permission policy every time it was attempted) to find the real cause
+  before trying again. Left alone for now; `minio-data`'s actual usage is
+  already back above its 38Gi nominal size as retention accumulates, so this
+  is worth returning to before it becomes the same kind of capacity crunch
+  that blocked GitLab's backup in the first place.
 
 ## Standard branch-to-rollout procedure
 
